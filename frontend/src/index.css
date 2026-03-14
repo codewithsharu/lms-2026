@@ -41,6 +41,37 @@ html {
   min-height: 100vh;
 }
 
+/* Keep text caret only in real form fields */
+html,
+body,
+#root,
+button,
+a,
+div,
+span,
+p,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+section,
+article,
+main,
+aside,
+nav,
+label {
+  caret-color: transparent;
+}
+
+input,
+textarea,
+select,
+[contenteditable='true'] {
+  caret-color: auto;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 8px;

@@ -48,21 +48,21 @@ const Login = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4 sm:p-6">
-      <div className="w-full max-w-[480px] bg-white border border-gray-200 rounded-none sm:rounded-xl shadow-[0_8px_24px_rgba(15,23,42,0.08)] overflow-hidden">
-        <div className="bg-primary px-8 py-9 text-center">
-          <p className="text-xs tracking-[0.24em] text-primary-light uppercase">Assessment</p>
-          <h1 className="mt-2 text-[1.95rem] leading-9 font-medium text-white">College Portal</h1>
-          <div className="mx-auto mt-4 h-[2px] w-14 bg-primary-light/80" />
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-3 sm:p-4">
+      <div className="w-full max-w-[420px] bg-white border border-gray-200 rounded-none shadow-[0_12px_30px_rgba(15,23,42,0.12)] overflow-hidden">
+        <div className="bg-primary px-6 py-6 text-center">
+          <p className="text-[10px] tracking-[0.22em] text-primary-light uppercase">Assessment</p>
+          <h1 className="mt-1.5 text-[1.9rem] leading-8 font-medium text-white">College Portal</h1>
+          <div className="mx-auto mt-3 h-[2px] w-12 bg-primary-light/80" />
         </div>
 
-        <div className="px-8 py-8 sm:px-9">
-          <div className="text-center mb-7">
-            <h2 className="text-[1.9rem] leading-9 font-medium text-gray-900">Welcome Back</h2>
-            <p className="mt-2 text-[1.15rem] text-gray-500 font-normal">Sign in to your account to continue</p>
+        <div className="px-6 py-6 sm:px-7">
+          <div className="text-center mb-5">
+            <h2 className="text-[1.2rem] leading-8 font-medium text-gray-900">Welcome Back</h2>
+            <p className="mt-1 text-[0.95rem] text-gray-500 font-normal">Sign in to your account to continue</p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
+          <form onSubmit={handleSubmit} className="space-y-4">
             <InputField
               label="Email Address"
               type="email"
@@ -71,7 +71,7 @@ const Login = () => {
               placeholder="example@email.com"
               autoComplete="email"
               leftIcon={FiMail}
-              inputClassName="!rounded-none !h-12"
+              inputClassName="!h-10 !rounded-none"
             />
 
             <InputField
@@ -82,7 +82,7 @@ const Login = () => {
               placeholder="Enter your password"
               autoComplete="current-password"
               leftIcon={FiLock}
-              inputClassName="!rounded-none !h-12"
+              inputClassName="!h-10 !rounded-none"
               rightNode={(
                 <button
                   type="button"
@@ -104,7 +104,7 @@ const Login = () => {
             <Button
               type="submit"
               disabled={loading}
-              className="w-full !py-3 !rounded-none !bg-primary hover:!bg-primary-dark !tracking-[0.14em] !uppercase"
+              className="w-full !py-2.5 !rounded-none !bg-primary hover:!bg-primary-dark !tracking-[0.12em] !uppercase"
             >
               {loading ? (
                 <>
@@ -120,14 +120,14 @@ const Login = () => {
             </Button>
           </form>
 
-          <div className="mt-8 border-t border-gray-200 pt-7 text-center">
-            <p className="text-[0.95rem] text-gray-600 font-normal">
+          <div className="mt-6 border-t border-gray-200 pt-5 text-center">
+            <p className="text-sm text-gray-600 font-normal">
               Need access? <span className="text-primary font-medium">Contact Admin</span>
             </p>
           </div>
         </div>
 
-        <p className="text-center text-xs text-gray-500 pb-6 px-8">© 2026 College Assessment Platform</p>
+        <p className="text-center text-xs text-gray-500 pb-4 px-6">© 2026 College Assessment Platform</p>
       </div>
     </div>
   );
