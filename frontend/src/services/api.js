@@ -93,4 +93,8 @@ export const teacherAPI = {
   deleteStudentFromClass: (classId, studentId) => api.delete(`/classes/teacher/classes/${classId}/students/${studentId}`),
 };
 
+export const auditLogAPI = {
+  getAll: (params) => api.get('/audit-logs', { params }),
+};
+
 export default api;

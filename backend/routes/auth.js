@@ -8,20 +8,29 @@ const router = express.Router();
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SESSION_EXPIRES_IN = '24h';
 
+const isProduction = process.env.NODE_ENV === 'production';
+const cookieSameSite = (process.env.COOKIE_SAME_SITE || (isProduction ? 'none' : 'lax')).toLowerCase();
+const cookieSecure = process.env.COOKIE_SECURE
+  ? process.env.COOKIE_SECURE === 'true'
+  : cookieSameSite === 'none' || isProduction;
+const cookieDomain = process.env.COOKIE_DOMAIN || undefined;
+
 const getAuthCookieOptions = () => ({
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+  secure: cookieSecure,
+  sameSite: cookieSameSite,
   maxAge: SESSION_MAX_AGE_MS,
   expires: new Date(Date.now() + SESSION_MAX_AGE_MS),
-  path: '/'
+  path: '/',
+  ...(cookieDomain ? { domain: cookieDomain } : {})
 });
 
 const getClearCookieOptions = () => ({
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-  path: '/'
+  secure: cookieSecure,
+  sameSite: cookieSameSite,
+  path: '/',
+  ...(cookieDomain ? { domain: cookieDomain } : {})
 });
 
 // Login endpoint

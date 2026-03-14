@@ -8,6 +8,7 @@ import Login from './pages/Login';
 import AdminDashboard from './pages/admin/Dashboard';
 import UserManagement from './pages/admin/UserManagement';
 import ClassManagement from './pages/admin/ClassManagement';
+import AuditLogs from './pages/admin/AuditLogs';
 import TeacherDashboard from './pages/teacher/Dashboard';
 import TeacherStudents from './pages/teacher/Students';
 import TeacherClasses from './pages/teacher/Classes';
@@ -84,6 +85,14 @@ function App() {
             element={
               <ProtectedRoute allowedRoles={['admin']}>
                 <UnderDevelopment title="Admin Settings" description="Settings module is under development." />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/audit-logs"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AuditLogs />
               </ProtectedRoute>
             }
           />
@@ -184,18 +193,36 @@ function App() {
         toastOptions={{
           duration: 4000,
           style: {
-            background: '#333',
-            color: '#fff',
+            background: '#ffffff',
+            color: '#0F172A',
+            border: '1px solid #E2E8F0',
+            borderRadius: '12px',
+            boxShadow: '0 12px 28px rgba(15, 23, 42, 0.12)',
+            padding: '12px 14px',
+            fontSize: '14px',
+            fontWeight: 500,
           },
           success: {
             style: {
-              background: '#25D366',
+              border: '1px solid #86EFAC',
+              background: '#F0FDF4',
+              color: '#166534',
             },
+            iconTheme: {
+              primary: '#16A34A',
+              secondary: '#ECFDF5',
+            }
           },
           error: {
             style: {
-              background: '#EF4444',
+              border: '1px solid #FECACA',
+              background: '#FEF2F2',
+              color: '#991B1B',
             },
+            iconTheme: {
+              primary: '#DC2626',
+              secondary: '#FEF2F2',
+            }
           },
         }}
       />

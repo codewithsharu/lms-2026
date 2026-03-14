@@ -9,6 +9,7 @@ const { auditMiddleware } = require('./middleware/audit');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const classRoutes = require('./routes/classes');
+const auditLogRoutes = require('./routes/auditLogs');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -56,6 +57,7 @@ app.use(auditMiddleware);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/classes', classRoutes);
+app.use('/api/audit-logs', auditLogRoutes);
 
 // Base routes
 app.get('/', (req, res) => {

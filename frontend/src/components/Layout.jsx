@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { getRoleBadgeClass } from '../utils/uiTheme';
 import { 
   FiHome, FiUsers, FiSettings, FiLogOut, FiMenu, FiX,
-  FiBook, FiClipboard, FiBarChart2, FiUser, FiChevronRight
+  FiBook, FiClipboard, FiBarChart2, FiUser, FiChevronRight, FiActivity
 } from 'react-icons/fi';
 
 const Layout = ({ children }) => {
@@ -27,6 +27,7 @@ const Layout = ({ children }) => {
         { name: 'Teachers', path: '/admin/teachers', icon: FiUser },
         { name: 'Classes', path: '/admin/classes', icon: FiBook },
         { name: 'Analytics', path: '/admin/analytics', icon: FiBarChart2 },
+        { name: 'Audit Logs', path: '/admin/audit-logs', icon: FiActivity },
         { name: 'Settings', path: '/admin/settings', icon: FiSettings },
       ],
       teacher: [
@@ -58,6 +59,38 @@ const Layout = ({ children }) => {
   };
 
   const currentNavItem = navItems.find((item) => isItemActive(item.path));
+
+  const getIconTone = (path) => {
+    if (path.includes('students')) {
+      return 'bg-blue-50 text-blue-600 group-hover:bg-blue-100 group-hover:text-blue-700';
+    }
+
+    if (path.includes('teachers') || path.includes('profile')) {
+      return 'bg-indigo-50 text-indigo-600 group-hover:bg-indigo-100 group-hover:text-indigo-700';
+    }
+
+    if (path.includes('classes')) {
+      return 'bg-amber-50 text-amber-600 group-hover:bg-amber-100 group-hover:text-amber-700';
+    }
+
+    if (path.includes('analytics') || path.includes('results')) {
+      return 'bg-violet-50 text-violet-600 group-hover:bg-violet-100 group-hover:text-violet-700';
+    }
+
+    if (path.includes('audit-logs')) {
+      return 'bg-emerald-50 text-emerald-600 group-hover:bg-emerald-100 group-hover:text-emerald-700';
+    }
+
+    if (path.includes('settings')) {
+      return 'bg-slate-100 text-slate-600 group-hover:bg-slate-200 group-hover:text-slate-700';
+    }
+
+    if (path.includes('assessments')) {
+      return 'bg-cyan-50 text-cyan-600 group-hover:bg-cyan-100 group-hover:text-cyan-700';
+    }
+
+    return 'bg-gray-100 text-gray-500 group-hover:bg-gray-200 group-hover:text-gray-700';
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -101,6 +134,7 @@ const Layout = ({ children }) => {
           {navItems.map((item) => {
             const isActive = isItemActive(item.path);
             const Icon = item.icon;
+            const iconToneClass = getIconTone(item.path);
             
             return (
               <Link
@@ -109,7 +143,7 @@ const Layout = ({ children }) => {
                 onClick={() => setSidebarOpen(false)}
                 className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 transition-all duration-200 ${
                   isActive
-                    ? 'bg-blue-50 text-primary border border-blue-200'
+                    ? 'bg-blue-50 text-primary border border-blue-200 shadow-[0_1px_2px_rgba(37,99,235,0.08)]'
                     : 'text-gray-600 hover:bg-gray-100/80 hover:text-gray-900 border border-transparent'
                 }`}
               >
@@ -117,7 +151,7 @@ const Layout = ({ children }) => {
                   className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
                     isActive
                       ? 'bg-primary text-white'
-                      : 'bg-gray-100 text-gray-500 group-hover:bg-blue-50 group-hover:text-primary'
+                      : iconToneClass
                   }`}
                 >
                   <Icon className="w-4 h-4" />

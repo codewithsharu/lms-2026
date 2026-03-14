@@ -42,7 +42,10 @@ const UserManagement = ({ fixedRole = '' }) => {
   const [showUploadModal, setShowUploadModal] = useState(searchParams.get('action') === 'upload');
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showResetPasswordModal, setShowResetPasswordModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
+  const [resetPasswordValue, setResetPasswordValue] = useState('123456789');
+  const [resetPasswordLoading, setResetPasswordLoading] = useState(false);
 
   const getEmptyEditFormData = () => ({
     role: '',
@@ -319,12 +322,35 @@ const UserManagement = ({ fixedRole = '' }) => {
     }
   };
 
-  const handleResetPassword = async (userId) => {
+  const openResetPasswordModal = (user) => {
+    setSelectedUser(user);
+    setResetPasswordValue('123456789');
+    setShowResetPasswordModal(true);
+  };
+
+  const closeResetPasswordModal = () => {
+    setShowResetPasswordModal(false);
+    setResetPasswordValue('123456789');
+    setSelectedUser(null);
+  };
+
+  const handleResetPassword = async () => {
+    if (!selectedUser) return;
+
+    if (!resetPasswordValue || resetPasswordValue.length < 6) {
+      toast.error('Password must be at least 6 characters');
+      return;
+    }
+
     try {
-      const response = await userAPI.resetPassword(userId);
-      toast.success(`New password: ${response.data.newPassword}`, { duration: 10000 });
-    } catch {
-      toast.error('Failed to reset password');
+      setResetPasswordLoading(true);
+      await userAPI.resetPassword(selectedUser.id, resetPasswordValue);
+      toast.success('Password updated successfully');
+      closeResetPasswordModal();
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to update password');
+    } finally {
+      setResetPasswordLoading(false);
     }
   };
 
@@ -361,6 +387,7 @@ const UserManagement = ({ fixedRole = '' }) => {
       document.body.appendChild(link);
       link.click();
       link.remove();
+      toast.success(`${type === 'teacher' ? 'Teacher' : 'Student'} template downloaded`);
     } catch {
       toast.error(`Failed to download ${type} template`);
     }
@@ -533,7 +560,7 @@ const UserManagement = ({ fixedRole = '' }) => {
                             <Button variant="secondary" className="!h-9 !w-9 !p-0" onClick={() => openEditModal(user)}>
                               <FiEdit2 className="h-[15px] w-[15px]" />
                             </Button>
-                            <Button variant="secondary" className="!h-9 !w-9 !p-0" onClick={() => handleResetPassword(user.id)}>
+                            <Button variant="secondary" className="!h-9 !w-9 !p-0" onClick={() => openResetPasswordModal(user)}>
                               <FiKey className="h-[15px] w-[15px]" />
                             </Button>
                             <Button
@@ -986,6 +1013,39 @@ const UserManagement = ({ fixedRole = '' }) => {
                 </div>
               </div>
             )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={showResetPasswordModal && !!selectedUser}
+        onClose={closeResetPasswordModal}
+        title={`Reset Password - ${entityLabel}`}
+        subtitle="Set a new password before confirming the reset."
+        maxWidth="max-w-md"
+        footer={
+          <div className="flex gap-3">
+            <Button variant="secondary" className="w-full" onClick={closeResetPasswordModal}>
+              Cancel
+            </Button>
+            <Button className="w-full" onClick={handleResetPassword} disabled={resetPasswordLoading}>
+              {resetPasswordLoading ? 'Updating...' : 'Update Password'}
+            </Button>
+          </div>
+        }
+      >
+        {selectedUser && (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-600">
+              You are changing password for <span className="font-semibold text-slate-800">{selectedUser.full_name}</span>.
+            </p>
+            <InputField
+              label="New Password"
+              value={resetPasswordValue}
+              onChange={(e) => setResetPasswordValue(e.target.value)}
+              placeholder="Enter new password"
+            />
+            <p className="text-xs text-slate-500">Default value is <span className="font-medium">123456789</span>. You can edit it before saving.</p>
           </div>
         )}
       </Modal>
