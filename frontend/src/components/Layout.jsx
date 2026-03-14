@@ -22,12 +22,12 @@ const Layout = ({ children }) => {
   const getNavItems = () => {
     const baseItems = {
       admin: [
+        { name: 'Audit Logs', path: '/admin/audit-logs', icon: FiActivity },
         { name: 'Dashboard', path: '/admin', icon: FiHome },
         { name: 'Students', path: '/admin/students', icon: FiUsers },
         { name: 'Teachers', path: '/admin/teachers', icon: FiUser },
         { name: 'Classes', path: '/admin/classes', icon: FiBook },
         { name: 'Analytics', path: '/admin/analytics', icon: FiBarChart2 },
-        { name: 'Audit Logs', path: '/admin/audit-logs', icon: FiActivity },
         { name: 'Settings', path: '/admin/settings', icon: FiSettings },
       ],
       teacher: [
