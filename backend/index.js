@@ -13,9 +13,33 @@ const classRoutes = require('./routes/classes');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+const defaultAllowedOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://lms-2026-pi.vercel.app'
+];
+
+const allowedOrigins = (
+  process.env.FRONTEND_URLS || process.env.FRONTEND_URL || ''
+)
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const corsOriginAllowList = allowedOrigins.length > 0
+  ? allowedOrigins
+  : defaultAllowedOrigins;
+
 // CORS configuration for cookies
 const corsOptions = {
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    if (!origin || corsOriginAllowList.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
   credentials: true, // Allow cookies to be sent
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
