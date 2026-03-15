@@ -6,6 +6,7 @@ import Button from '../../components/ui/Button';
 import Card from '../../components/ui/Card';
 import Modal from '../../components/ui/Modal';
 import { assessmentAPI } from '../../services/api';
+import { getExamSessionToken } from '../../utils/examSession';
 
 const formatTimer = (seconds) => {
   const safe = Math.max(0, Number(seconds || 0));
@@ -58,13 +59,36 @@ const AssessmentAttempt = () => {
   const [submittedSummary, setSubmittedSummary] = useState(null);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [showFullscreenLock, setShowFullscreenLock] = useState(false);
+  const [sessionConflict, setSessionConflict] = useState(null);
+  const [resumingHere, setResumingHere] = useState(false);
+  const [lastAutoSavedAt, setLastAutoSavedAt] = useState(null);
 
   const hasAutoSubmittedRef = useRef(false);
+  const sessionTokenRef = useRef(getExamSessionToken());
+  const skipNextAutosaveRef = useRef(true);
 
-  const loadAttempt = async () => {
+  const buildAutosavePayload = (questionList, currentAnswers, currentSaved, currentMarked) => {
+    const payload = {};
+
+    questionList.forEach((question) => {
+      const key = String(question.index);
+      payload[key] = currentAnswers[key] ?? getDefaultAnswerForQuestion(question);
+    });
+
+    payload.__uiSavedResponses = currentSaved;
+    payload.__uiMarkedForReview = currentMarked;
+
+    return payload;
+  };
+
+  const loadAttempt = async ({ forceTakeover = false } = {}) => {
     try {
       setLoading(true);
-      const response = await assessmentAPI.getStudentAttempt(attemptId);
+      setSessionConflict(null);
+      const response = await assessmentAPI.getStudentAttempt(attemptId, {
+        sessionToken: sessionTokenRef.current,
+        forceTakeover
+      });
       const attempt = response.data?.attempt;
       const hostedAssessment = response.data?.hostedAssessment;
       const questionList = response.data?.questions || [];
@@ -80,16 +104,26 @@ const AssessmentAttempt = () => {
 
       const initialAnswers = {};
       const initialSaved = {};
+      const persistedSaved = attempt.answers?.__uiSavedResponses;
+      const persistedMarked = attempt.answers?.__uiMarkedForReview;
       questionList.forEach((question) => {
         const key = String(question.index);
         const normalized = normalizeAnswerForQuestion(question, attempt.answers?.[key]);
         initialAnswers[key] = normalized;
-        initialSaved[key] = hasAnswerValue(question, normalized);
+        initialSaved[key] = typeof persistedSaved?.[key] === 'boolean'
+          ? persistedSaved[key]
+          : hasAnswerValue(question, normalized);
       });
 
       setAnswers(initialAnswers);
       setSavedResponses(initialSaved);
+      setMarkedForReview(
+        persistedMarked && typeof persistedMarked === 'object'
+          ? persistedMarked
+          : {}
+      );
       setTimeLeft(Number(attempt.remaining_seconds || 0));
+      skipNextAutosaveRef.current = true;
 
       if (attempt.status === 'submitted' || attempt.status === 'auto_submitted') {
         setSubmittedSummary({
@@ -104,6 +138,15 @@ const AssessmentAttempt = () => {
         });
       }
     } catch (error) {
+      if (error.response?.status === 409 && error.response?.data?.sessionConflict) {
+        setShowSubmitModal(false);
+        setSessionConflict({
+          message: error.response?.data?.error || 'This attempt is active in another session.',
+          attemptId: error.response?.data?.attemptId || attemptId
+        });
+        return;
+      }
+
       toast.error(error.response?.data?.error || 'Failed to load attempt');
       navigate('/student/assessments');
     } finally {
@@ -177,6 +220,44 @@ const AssessmentAttempt = () => {
     return () => clearInterval(timer);
   }, [timeLeft, attemptData, submittedSummary]);
 
+  useEffect(() => {
+    if (!attemptData || submittedSummary) return;
+    if (!attemptData?.attempt?.id) return;
+
+    if (skipNextAutosaveRef.current) {
+      skipNextAutosaveRef.current = false;
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        await assessmentAPI.autosaveStudentAttempt(
+          attemptData.attempt.id,
+          {
+            answers: buildAutosavePayload(questions, answers, savedResponses, markedForReview)
+          },
+          {
+            sessionToken: sessionTokenRef.current
+          }
+        );
+
+        setLastAutoSavedAt(new Date());
+      } catch (error) {
+        if (error.response?.status === 409 && error.response?.data?.sessionConflict) {
+          setSessionConflict({
+            message: error.response?.data?.error || 'This attempt is active in another session.',
+            attemptId: error.response?.data?.attemptId || attemptId
+          });
+          return;
+        }
+
+        console.error('Autosave failed:', error);
+      }
+    }, 900);
+
+    return () => clearTimeout(timer);
+  }, [answers, savedResponses, markedForReview, attemptData, submittedSummary, questions, attemptId]);
+
   const answeredCount = useMemo(() => {
     return questions.filter((question) => Boolean(savedResponses[String(question.index)])).length;
   }, [questions, savedResponses]);
@@ -228,6 +309,8 @@ const AssessmentAttempt = () => {
       const response = await assessmentAPI.submitStudentAttempt(attemptId, {
         answers,
         forceAutoSubmit
+      }, {
+        sessionToken: sessionTokenRef.current
       });
 
       const attempt = response.data?.attempt;
@@ -262,6 +345,16 @@ const AssessmentAttempt = () => {
   const confirmSubmitFromModal = async () => {
     setShowSubmitModal(false);
     await handleSubmit(false);
+  };
+
+  const handleSessionTakeover = async () => {
+    try {
+      setResumingHere(true);
+      await loadAttempt({ forceTakeover: true });
+      toast.success('Session moved to this browser safely.');
+    } finally {
+      setResumingHere(false);
+    }
   };
 
   const clearCurrentResponse = () => {
@@ -379,6 +472,11 @@ const AssessmentAttempt = () => {
             <div>
               <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">{attemptData.hostedAssessment.title}</h1>
               <p className="text-sm text-slate-500">{attemptData.hostedAssessment.subject} • Attempt {attemptData.attempt.attempt_number}</p>
+              {lastAutoSavedAt && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Autosaved at {lastAutoSavedAt.toLocaleTimeString()}
+                </p>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center justify-end gap-2 lg:max-w-[70%]">
@@ -558,6 +656,32 @@ const AssessmentAttempt = () => {
             </div>
           </div>
         </div>
+
+        <Modal
+          open={Boolean(sessionConflict)}
+          onClose={() => navigate('/student/assessments')}
+          title="Resume Here Safely"
+          subtitle="Another browser session is active for this attempt"
+          maxWidth="max-w-xl"
+          footer={(
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => navigate('/student/assessments')}>
+                Back
+              </Button>
+              <Button onClick={handleSessionTakeover} disabled={resumingHere}>
+                <FiLock className="h-4 w-4" />
+                {resumingHere ? 'Resuming Here...' : 'Resume Here & Logout Other Session'}
+              </Button>
+            </div>
+          )}
+        >
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+            {sessionConflict?.message || 'This attempt is active in another browser session.'}
+          </div>
+          <p className="mt-3 text-sm text-slate-600">
+            To prevent conflicts, only one active session can write answers. Continuing here will safely end access from the other browser.
+          </p>
+        </Modal>
 
         <Modal
           open={showSubmitModal}

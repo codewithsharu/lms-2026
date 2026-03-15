@@ -6,6 +6,7 @@ import Layout from '../../components/Layout';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import { assessmentAPI } from '../../services/api';
+import { getExamSessionToken } from '../../utils/examSession';
 
 const formatDateTime = (value) => {
   if (!value) return 'Not set';
@@ -72,7 +73,9 @@ const AssessmentInstructions = () => {
 
     try {
       setStarting(true);
-      const response = await assessmentAPI.startStudentAttempt(hostedAssessmentId);
+      const response = await assessmentAPI.startStudentAttempt(hostedAssessmentId, {
+        sessionToken: getExamSessionToken()
+      });
       const attemptId = response.data?.attempt?.id;
 
       if (!attemptId) {
@@ -84,7 +87,12 @@ const AssessmentInstructions = () => {
         state: { shouldEnterFullscreen: true }
       });
     } catch (error) {
-      toast.error(error.response?.data?.error || 'Failed to start attempt');
+      if (error.response?.status === 409 && error.response?.data?.sessionConflict && error.response?.data?.attemptId) {
+        toast.error(error.response?.data?.error || 'This exam is active in another session');
+        navigate(`/student/assessments/attempt/${error.response.data.attemptId}`);
+      } else {
+        toast.error(error.response?.data?.error || 'Failed to start attempt');
+      }
     } finally {
       setStarting(false);
     }

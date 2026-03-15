@@ -121,9 +121,36 @@ export const assessmentAPI = {
   getAdminMetrics: () => api.get('/assessments/metrics/admin'),
   getStudentMetrics: () => api.get('/assessments/metrics/student'),
   getStudentAvailable: () => api.get('/assessments/student/available'),
-  startStudentAttempt: (hostedAssessmentId) => api.post(`/assessments/student/hosted/${hostedAssessmentId}/start`),
-  getStudentAttempt: (attemptId) => api.get(`/assessments/student/attempts/${attemptId}`),
-  submitStudentAttempt: (attemptId, data) => api.post(`/assessments/student/attempts/${attemptId}/submit`, data),
+  startStudentAttempt: (hostedAssessmentId, options = {}) => api.post(
+    `/assessments/student/hosted/${hostedAssessmentId}/start`,
+    {
+      forceTakeover: Boolean(options.forceTakeover),
+      sessionToken: options.sessionToken || undefined
+    }
+  ),
+  getStudentAttempt: (attemptId, options = {}) => api.get(
+    `/assessments/student/attempts/${attemptId}`,
+    {
+      params: {
+        forceTakeover: options.forceTakeover ? 'true' : undefined,
+        sessionToken: options.sessionToken || undefined
+      }
+    }
+  ),
+  autosaveStudentAttempt: (attemptId, data = {}, options = {}) => api.post(
+    `/assessments/student/attempts/${attemptId}/autosave`,
+    {
+      ...data,
+      sessionToken: options.sessionToken || data.sessionToken
+    }
+  ),
+  submitStudentAttempt: (attemptId, data = {}, options = {}) => api.post(
+    `/assessments/student/attempts/${attemptId}/submit`,
+    {
+      ...data,
+      sessionToken: options.sessionToken || data.sessionToken
+    }
+  ),
   getStudentResults: () => api.get('/assessments/student/results'),
 };
 

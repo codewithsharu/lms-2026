@@ -976,6 +976,88 @@ router.post('/student/attempts/:attemptId/submit', verifyToken, hasRole('student
   }
 });
 
+// Student: autosave in-progress attempt answers
+router.post('/student/attempts/:attemptId/autosave', verifyToken, hasRole('student'), async (req, res) => {
+  try {
+    const { attemptId } = req.params;
+    const incomingAnswers = req.body?.answers;
+    const sessionToken = getExamSessionToken(req);
+
+    if (!sessionToken) {
+      return res.status(400).json({ error: 'Session token is required for secure exam session' });
+    }
+
+    const { data: attempt, error: attemptError } = await supabase
+      .from('assessment_attempts')
+      .select(`
+        *,
+        hosted:hosted_assessment_id(
+          id,
+          duration_minutes,
+          result_mode,
+          publish_status,
+          start_time,
+          end_time,
+          template:template_id(id, total_marks, template_data)
+        )
+      `)
+      .eq('id', attemptId)
+      .eq('student_id', req.user.id)
+      .single();
+
+    if (attemptError || !attempt) {
+      return res.status(404).json({ error: 'Attempt not found' });
+    }
+
+    if (attempt.status !== 'in_progress') {
+      return res.status(400).json({ error: 'Only in-progress attempts can be autosaved' });
+    }
+
+    const activeSession = getAttemptSessionMeta(attempt.answers).token;
+    const hasDifferentSession = Boolean(activeSession && activeSession !== sessionToken);
+
+    if (hasDifferentSession) {
+      return res.status(409).json(buildSessionConflictResponse(
+        'This attempt is active in another browser session. Resume here to safely continue.',
+        attempt.id
+      ));
+    }
+
+    const safeIncoming = (incomingAnswers && typeof incomingAnswers === 'object') ? incomingAnswers : {};
+    const mergedAnswers = {
+      ...(attempt.answers && typeof attempt.answers === 'object' ? attempt.answers : {}),
+      ...safeIncoming
+    };
+
+    const { data: updatedAttempt, error: updateError } = await supabase
+      .from('assessment_attempts')
+      .update({
+        answers: applyAttemptSessionMeta(mergedAnswers, sessionToken)
+      })
+      .eq('id', attempt.id)
+      .select('*')
+      .single();
+
+    if (updateError) throw updateError;
+
+    const remainingSeconds = getRemainingSeconds(updatedAttempt, attempt.hosted);
+
+    res.json({
+      message: 'Autosaved successfully',
+      autosavedAt: updatedAttempt.updated_at,
+      remaining_seconds: remainingSeconds,
+      attempt: {
+        id: updatedAttempt.id,
+        status: updatedAttempt.status,
+        updated_at: updatedAttempt.updated_at
+      }
+    });
+  } catch (error) {
+    console.error('Autosave student attempt error:', error);
+    res.status(500).json({ error: getApiErrorMessage(error, 'Failed to autosave attempt') });
+  }
+});
+
 // Student: results from attempts
 router.get('/student/results', verifyToken, hasRole('student'), async (req, res) => {
   try {
