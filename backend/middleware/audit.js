@@ -75,6 +75,26 @@ const buildRequestContextMetadata = (req) => {
   };
 };
 
+const shouldSkipAudit = (req) => {
+  const cleanUrl = String(req.originalUrl || '').split('?')[0];
+
+  const excludedExactPaths = [
+    '/api/health',
+    '/api/db-status',
+    '/api/auth/me'
+  ];
+
+  if (excludedExactPaths.includes(cleanUrl)) {
+    return true;
+  }
+
+  if (cleanUrl.startsWith('/api/audit-logs')) {
+    return true;
+  }
+
+  return false;
+};
+
 const logAction = async (req, actionType, resourceType, resourceId, changes = null, metadata = null) => {
   try {
     if (req && typeof req === 'object') {
@@ -116,6 +136,8 @@ const auditMiddleware = (req, res, next) => {
 
   res.on('finish', () => {
     if (!req.originalUrl?.startsWith('/api/')) return;
+    if (shouldSkipAudit(req)) return;
+    if (req._manualAuditLogged) return;
 
     const resourceType = extractResourceType(req.originalUrl);
     const actionType = inferActionType(req);

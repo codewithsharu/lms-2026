@@ -89,6 +89,31 @@ const parseCsvRows = (fileBuffer) => {
   }));
 };
 
+const parseBulkAssignmentRows = (fileBuffer) => {
+  const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+  const firstSheetName = workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[firstSheetName];
+  const rawRows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+
+  const pick = (row, keys) => {
+    for (const key of keys) {
+      if (row[key] !== undefined && row[key] !== null && String(row[key]).trim() !== '') {
+        return String(row[key]).trim();
+      }
+    }
+    return '';
+  };
+
+  return rawRows.map((row, index) => ({
+    rowNumber: index + 2,
+    teacher_id: pick(row, ['teacher_id', 'teacher id', 'Teacher ID']),
+    teacher_email: pick(row, ['teacher_email', 'teacher email', 'email', 'Teacher Email', 'Email']).toLowerCase(),
+    section_id: pick(row, ['section_id', 'section id', 'Section ID']),
+    section_name: pick(row, ['section_name', 'section name', 'section', 'Section Name', 'Section']),
+    zone: pick(row, ['zone', 'Zone'])
+  }));
+};
+
 const getTeacherAssignmentsForClass = async (teacherId, classId) => {
   const { data: teacherAssignments, error } = await supabase
     .from('teacher_assignments')
@@ -1384,6 +1409,222 @@ router.post('/:classId/assign-teacher', verifyToken, isAdmin, async (req, res) =
     });
   } catch (error) {
     console.error('Assign teacher error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Bulk assign teachers to class from CSV (Admin only)
+router.post('/:classId/assign-teacher/bulk-upload', verifyToken, isAdmin, bulkUpload.single('file'), async (req, res) => {
+  try {
+    const { classId } = req.params;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'CSV file is required' });
+    }
+
+    const { data: classData } = await supabase
+      .from('classes')
+      .select('id, name')
+      .eq('id', classId)
+      .single();
+
+    if (!classData) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    const rows = parseBulkAssignmentRows(req.file.buffer);
+
+    if (!rows.length) {
+      return res.status(400).json({ error: 'CSV file is empty' });
+    }
+
+    const { data: sections, error: sectionError } = await supabase
+      .from('sections')
+      .select('id, name')
+      .eq('class_id', classId);
+
+    if (sectionError) throw sectionError;
+
+    const sectionsById = new Map();
+    const sectionsByName = new Map();
+
+    (sections || []).forEach((section) => {
+      sectionsById.set(section.id, section);
+      sectionsByName.set(String(section.name || '').trim().toLowerCase(), section);
+    });
+
+    const teacherIds = [...new Set(rows.map((row) => row.teacher_id).filter(Boolean))];
+    const teacherEmails = [...new Set(rows.map((row) => row.teacher_email).filter(Boolean))];
+
+    let teachersById = new Map();
+    let teachersByEmail = new Map();
+
+    if (teacherIds.length > 0) {
+      const { data: teachersByIds, error: teacherIdError } = await supabase
+        .from('users')
+        .select('id, full_name, email')
+        .eq('role', 'teacher')
+        .eq('is_active', true)
+        .in('id', teacherIds);
+
+      if (teacherIdError) throw teacherIdError;
+
+      teachersById = new Map((teachersByIds || []).map((teacher) => [teacher.id, teacher]));
+      (teachersByIds || []).forEach((teacher) => {
+        teachersByEmail.set(String(teacher.email || '').trim().toLowerCase(), teacher);
+      });
+    }
+
+    if (teacherEmails.length > 0) {
+      const { data: teachersByEmails, error: teacherEmailError } = await supabase
+        .from('users')
+        .select('id, full_name, email')
+        .eq('role', 'teacher')
+        .eq('is_active', true)
+        .in('email', teacherEmails);
+
+      if (teacherEmailError) throw teacherEmailError;
+
+      (teachersByEmails || []).forEach((teacher) => {
+        teachersById.set(teacher.id, teacher);
+        teachersByEmail.set(String(teacher.email || '').trim().toLowerCase(), teacher);
+      });
+    }
+
+    const { data: existingAssignments, error: existingError } = await supabase
+      .from('teacher_assignments')
+      .select('teacher_id, section_id, zone')
+      .eq('class_id', classId);
+
+    if (existingError) throw existingError;
+
+    const normalizeAssignmentKey = (teacherId, sectionId, zone) => {
+      return `${teacherId}::${sectionId || '__all_sections__'}::${zone || '__all_zones__'}`;
+    };
+
+    const existingAssignmentKeys = new Set(
+      (existingAssignments || []).map((assignment) => normalizeAssignmentKey(
+        assignment.teacher_id,
+        assignment.section_id,
+        assignment.zone
+      ))
+    );
+
+    const pendingAssignmentKeys = new Set();
+    const insertRows = [];
+    const skippedRows = [];
+
+    rows.forEach((row) => {
+      const issues = [];
+
+      if (!row.teacher_id && !row.teacher_email) {
+        issues.push('Either teacher_id or teacher_email is required');
+      }
+
+      let teacher = null;
+      if (row.teacher_id) {
+        teacher = teachersById.get(row.teacher_id) || null;
+      }
+
+      if (row.teacher_email) {
+        const byEmail = teachersByEmail.get(row.teacher_email) || null;
+
+        if (!teacher) {
+          teacher = byEmail;
+        } else if (byEmail && byEmail.id !== teacher.id) {
+          issues.push('teacher_id and teacher_email refer to different teachers');
+        }
+      }
+
+      if (!teacher) {
+        issues.push('Teacher not found or inactive');
+      }
+
+      let resolvedSectionId = null;
+
+      if (row.section_id) {
+        const section = sectionsById.get(row.section_id);
+        if (!section) {
+          issues.push('section_id not found in selected class');
+        } else {
+          resolvedSectionId = section.id;
+        }
+      } else if (row.section_name) {
+        const section = sectionsByName.get(String(row.section_name).trim().toLowerCase());
+        if (!section) {
+          issues.push('section_name not found in selected class');
+        } else {
+          resolvedSectionId = section.id;
+        }
+      }
+
+      const normalizedZone = row.zone ? normalizeZone(row.zone) : null;
+      if (row.zone && !normalizedZone) {
+        issues.push('zone must be blue, red, or green');
+      }
+
+      if (!issues.length && teacher) {
+        const assignmentKey = normalizeAssignmentKey(teacher.id, resolvedSectionId, normalizedZone);
+
+        if (existingAssignmentKeys.has(assignmentKey)) {
+          issues.push('Assignment already exists');
+        } else if (pendingAssignmentKeys.has(assignmentKey)) {
+          issues.push('Duplicate assignment in CSV');
+        } else {
+          pendingAssignmentKeys.add(assignmentKey);
+          insertRows.push({
+            teacher_id: teacher.id,
+            class_id: classId,
+            section_id: resolvedSectionId,
+            zone: normalizedZone
+          });
+        }
+      }
+
+      if (issues.length) {
+        skippedRows.push({
+          rowNumber: row.rowNumber,
+          issues,
+          teacher_id: row.teacher_id || null,
+          teacher_email: row.teacher_email || null,
+          section_id: row.section_id || null,
+          section_name: row.section_name || null,
+          zone: row.zone || null
+        });
+      }
+    });
+
+    let createdCount = 0;
+
+    if (insertRows.length > 0) {
+      const { data: createdAssignments, error: insertError } = await supabase
+        .from('teacher_assignments')
+        .insert(insertRows)
+        .select('id');
+
+      if (insertError) throw insertError;
+      createdCount = createdAssignments?.length || 0;
+    }
+
+    await logAction(req, 'BULK_CREATE', 'teacher_assignment', null, {
+      class_id: classId,
+      class_name: classData.name,
+      total_rows: rows.length,
+      created_count: createdCount,
+      skipped_count: skippedRows.length
+    });
+
+    res.status(201).json({
+      message: 'Bulk assignment processing completed',
+      summary: {
+        total_rows: rows.length,
+        created_count: createdCount,
+        skipped_count: skippedRows.length
+      },
+      skipped_rows: skippedRows
+    });
+  } catch (error) {
+    console.error('Bulk assign teachers error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

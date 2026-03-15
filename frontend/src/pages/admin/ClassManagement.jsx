@@ -7,7 +7,9 @@ import {
   FiBook,
   FiUserPlus,
   FiChevronRight,
-  FiCalendar
+  FiCalendar,
+  FiUpload,
+  FiDownload
 } from 'react-icons/fi';
 import { classAPI } from '../../services/api';
 import Layout from '../../components/Layout';
@@ -35,6 +37,7 @@ const ClassManagement = () => {
   const [showClassModal, setShowClassModal] = useState(false);
   const [showSectionModal, setShowSectionModal] = useState(false);
   const [showAssignModal, setShowAssignModal] = useState(false);
+  const [showBulkAssignModal, setShowBulkAssignModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   const [editingClass, setEditingClass] = useState(null);
@@ -45,6 +48,7 @@ const ClassManagement = () => {
   const [classForm, setClassForm] = useState({ name: '', description: '', academic_year: '' });
   const [sectionForm, setSectionForm] = useState({ name: '' });
   const [assignForm, setAssignForm] = useState({ teacher_id: '', section_id: '', zone: '' });
+  const [bulkAssignFile, setBulkAssignFile] = useState(null);
 
   const [teachers, setTeachers] = useState([]);
   const [formLoading, setFormLoading] = useState(false);
@@ -214,6 +218,12 @@ const ClassManagement = () => {
     setShowAssignModal(true);
   };
 
+  const openBulkAssignTeacher = (classId) => {
+    setSelectedClassId(classId);
+    setBulkAssignFile(null);
+    setShowBulkAssignModal(true);
+  };
+
   const handleAssignTeacher = async (e) => {
     e.preventDefault();
     setFormLoading(true);
@@ -237,6 +247,36 @@ const ClassManagement = () => {
       fetchClassDetails(expandedClass);
     } catch {
       toast.error('Failed to remove assignment');
+    }
+  };
+
+  const handleBulkAssignTeachers = async (e) => {
+    e.preventDefault();
+
+    if (!selectedClassId) {
+      toast.error('Please select a class first');
+      return;
+    }
+
+    if (!bulkAssignFile) {
+      toast.error('Please choose a CSV file');
+      return;
+    }
+
+    setFormLoading(true);
+
+    try {
+      const response = await classAPI.bulkAssignTeachers(selectedClassId, bulkAssignFile);
+      const summary = response.data?.summary || {};
+      toast.success(`Bulk done: ${summary.created_count || 0} created, ${summary.skipped_count || 0} skipped`);
+      setShowBulkAssignModal(false);
+      setBulkAssignFile(null);
+      fetchClassDetails(selectedClassId);
+      fetchClasses();
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Bulk assignment failed');
+    } finally {
+      setFormLoading(false);
     }
   };
 
@@ -432,10 +472,16 @@ const ClassManagement = () => {
                       <Card className="border-slate-200">
                         <Card.Header className="flex items-center justify-between">
                           <h4 className="text-sm font-medium text-slate-700">Assigned Teachers</h4>
-                          <Button variant="secondary" className="!px-3 !py-1.5" onClick={() => openAssignTeacher(cls.id)}>
-                            <FiUserPlus className="h-4 w-4" />
-                            Assign
-                          </Button>
+                          <div className="flex items-center gap-2">
+                            <Button variant="secondary" className="!px-3 !py-1.5" onClick={() => openBulkAssignTeacher(cls.id)}>
+                              <FiUpload className="h-4 w-4" />
+                              Bulk CSV
+                            </Button>
+                            <Button variant="secondary" className="!px-3 !py-1.5" onClick={() => openAssignTeacher(cls.id)}>
+                              <FiUserPlus className="h-4 w-4" />
+                              Assign
+                            </Button>
+                          </div>
                         </Card.Header>
                         <Card.Body>
                           {classDetails.teacher_assignments.length === 0 ? (
@@ -684,6 +730,64 @@ const ClassManagement = () => {
             Are you sure you want to delete this {deleteTarget.type}: <span className="font-medium text-slate-800">{deleteTarget.item.name}</span>?
           </p>
         )}
+      </Modal>
+
+      <Modal
+        open={showBulkAssignModal}
+        onClose={() => {
+          setShowBulkAssignModal(false);
+          setBulkAssignFile(null);
+        }}
+        title="Bulk Assign Teachers"
+        subtitle="Upload a CSV to assign multiple teachers to this class in one step."
+        maxWidth="max-w-xl"
+        footer={
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+            <Button
+              variant="secondary"
+              className="w-full sm:w-32"
+              onClick={() => {
+                setShowBulkAssignModal(false);
+                setBulkAssignFile(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" form="bulk-assign-form" disabled={formLoading} className="w-full sm:w-40" variant="success">
+              {formLoading ? 'Uploading...' : 'Upload CSV'}
+            </Button>
+          </div>
+        }
+      >
+        <form id="bulk-assign-form" onSubmit={handleBulkAssignTeachers} className="space-y-4">
+          <div className="surface-card-muted p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">CSV Columns</p>
+            <p className="mt-1 text-sm text-slate-600">
+              Required: <span className="font-medium">teacher_email</span> (or <span className="font-medium">teacher_id</span>)
+            </p>
+            <p className="text-sm text-slate-600">
+              Optional: <span className="font-medium">section_name</span> / <span className="font-medium">section_id</span>, <span className="font-medium">zone</span> (blue/red/green)
+            </p>
+            <a
+              href="/teacher-assignments-template.csv"
+              download
+              className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+            >
+              <FiDownload className="h-4 w-4" />
+              Download CSV Template
+            </a>
+          </div>
+
+          <div>
+            <label className="form-label">Select CSV File *</label>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              className="form-input"
+              onChange={(e) => setBulkAssignFile(e.target.files?.[0] || null)}
+            />
+          </div>
+        </form>
       </Modal>
     </Layout>
   );

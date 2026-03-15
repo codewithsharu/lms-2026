@@ -89,6 +89,41 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Assessment templates (teacher creates reusable exam blueprint)
+CREATE TABLE IF NOT EXISTS assessment_templates (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  teacher_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title VARCHAR(255) NOT NULL,
+  subject VARCHAR(120) NOT NULL,
+  description TEXT,
+  question_count INTEGER DEFAULT 0,
+  total_marks INTEGER DEFAULT 100,
+  passing_percentage INTEGER DEFAULT 40,
+  template_data JSONB DEFAULT '{}'::jsonb,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Hosted exams (teacher schedules and publishes from template)
+CREATE TABLE IF NOT EXISTS hosted_assessments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  template_id UUID NOT NULL REFERENCES assessment_templates(id) ON DELETE CASCADE,
+  host_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  class_id UUID REFERENCES classes(id) ON DELETE SET NULL,
+  section_id UUID REFERENCES sections(id) ON DELETE SET NULL,
+  zone VARCHAR(10) CHECK (zone IN ('blue', 'red', 'green')),
+  duration_minutes INTEGER NOT NULL,
+  max_attempts INTEGER DEFAULT 1,
+  result_mode VARCHAR(20) NOT NULL CHECK (result_mode IN ('immediate', 'manual', 'after_end')),
+  publish_status VARCHAR(20) NOT NULL CHECK (publish_status IN ('draft', 'published', 'closed')),
+  start_time TIMESTAMP WITH TIME ZONE,
+  end_time TIMESTAMP WITH TIME ZONE,
+  instructions TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- Indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
@@ -98,6 +133,9 @@ CREATE INDEX IF NOT EXISTS idx_teacher_details_user ON teacher_details(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_teacher_assignments_teacher ON teacher_assignments(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_assessment_templates_teacher ON assessment_templates(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_hosted_assessments_host ON hosted_assessments(host_id);
+CREATE INDEX IF NOT EXISTS idx_hosted_assessments_scope ON hosted_assessments(class_id, section_id, zone);
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
@@ -107,15 +145,76 @@ ALTER TABLE classes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE teacher_assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assessment_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hosted_assessments ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies (permissive for now - refine based on needs)
-CREATE POLICY "Allow all for authenticated" ON users FOR ALL USING (true);
-CREATE POLICY "Allow all for authenticated" ON student_details FOR ALL USING (true);
-CREATE POLICY "Allow all for authenticated" ON teacher_details FOR ALL USING (true);
-CREATE POLICY "Allow all for authenticated" ON classes FOR ALL USING (true);
-CREATE POLICY "Allow all for authenticated" ON sections FOR ALL USING (true);
-CREATE POLICY "Allow all for authenticated" ON teacher_assignments FOR ALL USING (true);
-CREATE POLICY "Allow all for authenticated" ON audit_logs FOR ALL USING (true);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'users' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON users FOR ALL USING (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'student_details' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON student_details FOR ALL USING (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'teacher_details' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON teacher_details FOR ALL USING (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'classes' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON classes FOR ALL USING (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'sections' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON sections FOR ALL USING (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'teacher_assignments' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON teacher_assignments FOR ALL USING (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'audit_logs' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON audit_logs FOR ALL USING (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'assessment_templates' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON assessment_templates FOR ALL USING (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'hosted_assessments' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON hosted_assessments FOR ALL USING (true);
+  END IF;
+END
+$$;
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -126,18 +225,41 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
--- Triggers for updated_at
-CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_users_updated_at') THEN
+    CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
 
-CREATE TRIGGER update_student_details_updated_at BEFORE UPDATE ON student_details
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_student_details_updated_at') THEN
+    CREATE TRIGGER update_student_details_updated_at BEFORE UPDATE ON student_details
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
 
-CREATE TRIGGER update_teacher_details_updated_at BEFORE UPDATE ON teacher_details
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_teacher_details_updated_at') THEN
+    CREATE TRIGGER update_teacher_details_updated_at BEFORE UPDATE ON teacher_details
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
 
-CREATE TRIGGER update_classes_updated_at BEFORE UPDATE ON classes
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_classes_updated_at') THEN
+    CREATE TRIGGER update_classes_updated_at BEFORE UPDATE ON classes
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
 
-CREATE TRIGGER update_sections_updated_at BEFORE UPDATE ON sections
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_sections_updated_at') THEN
+    CREATE TRIGGER update_sections_updated_at BEFORE UPDATE ON sections
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_assessment_templates_updated_at') THEN
+    CREATE TRIGGER update_assessment_templates_updated_at BEFORE UPDATE ON assessment_templates
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_hosted_assessments_updated_at') THEN
+    CREATE TRIGGER update_hosted_assessments_updated_at BEFORE UPDATE ON hosted_assessments
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+END
+$$;

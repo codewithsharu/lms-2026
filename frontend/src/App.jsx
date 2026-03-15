@@ -9,10 +9,15 @@ import AdminDashboard from './pages/admin/Dashboard';
 import UserManagement from './pages/admin/UserManagement';
 import ClassManagement from './pages/admin/ClassManagement';
 import AuditLogs from './pages/admin/AuditLogs';
+import HealthCheck from './pages/admin/HealthCheck';
+import HealthCheckTable from './pages/admin/HealthCheckTable';
 import TeacherDashboard from './pages/teacher/Dashboard';
 import TeacherStudents from './pages/teacher/Students';
 import TeacherClasses from './pages/teacher/Classes';
 import TeacherClassStudents from './pages/teacher/ClassStudents';
+import TeacherAssessmentTemplates from './pages/teacher/AssessmentTemplates';
+import TeacherAssessmentTemplateBuilder from './pages/teacher/AssessmentTemplateBuilder';
+import TeacherHostExams from './pages/teacher/HostExams';
 import StudentDashboard from './pages/student/Dashboard';
 import UnderDevelopment from './pages/UnderDevelopment';
 
@@ -96,6 +101,22 @@ function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/admin/health-check"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <HealthCheck />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/health-check/:tableName"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <HealthCheckTable />
+              </ProtectedRoute>
+            }
+          />
 
           {/* Teacher Routes */}
           <Route 
@@ -134,7 +155,31 @@ function App() {
             path="/teacher/assessments"
             element={
               <ProtectedRoute allowedRoles={['teacher']}>
-                <UnderDevelopment title="Teacher Assessments" description="Assessment tools are under development." />
+                <Navigate to="/teacher/assessments/templates" replace />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/teacher/assessments/templates"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <TeacherAssessmentTemplates />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/teacher/assessments/templates/:templateId/builder"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <TeacherAssessmentTemplateBuilder />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/teacher/assessments/host"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <TeacherHostExams />
               </ProtectedRoute>
             }
           />

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { FiUsers, FiUserPlus, FiBook, FiActivity, FiArrowRight } from 'react-icons/fi';
-import { userAPI } from '../../services/api';
+import { assessmentAPI, userAPI } from '../../services/api';
 import Layout from '../../components/Layout';
 import Card from '../../components/ui/Card';
 import StatCard from '../../components/ui/StatCard';
@@ -12,6 +12,7 @@ const AdminDashboard = () => {
     totalUsers: 0,
     teachers: 0,
     students: 0,
+    assessmentsPublished: 0,
     recentUsers: []
   });
   const [loading, setLoading] = useState(true);
@@ -22,13 +23,18 @@ const AdminDashboard = () => {
 
   const fetchStats = async () => {
     try {
-      const response = await userAPI.getAll({ limit: 100 });
-      const users = response.data.users;
+      const [userResponse, assessmentResponse] = await Promise.all([
+        userAPI.getAll({ limit: 100 }),
+        assessmentAPI.getAdminMetrics().catch(() => ({ data: { published: 0 } }))
+      ]);
+
+      const users = userResponse.data.users;
       
       setStats({
-        totalUsers: response.data.pagination.total,
+        totalUsers: userResponse.data.pagination.total,
         teachers: users.filter(u => u.role === 'teacher').length,
         students: users.filter(u => u.role === 'student').length,
+        assessmentsPublished: assessmentResponse.data?.published || 0,
         recentUsers: users.slice(0, 5)
       });
     } catch (error) {
@@ -80,8 +86,8 @@ const AdminDashboard = () => {
             />
             <StatCard 
               icon={FiActivity} 
-              label="New Today" 
-              value={0} 
+              label="Published Exams" 
+              value={stats.assessmentsPublished} 
               iconColorClass="bg-slate-700" 
             />
           </div>

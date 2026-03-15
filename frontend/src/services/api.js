@@ -75,6 +75,13 @@ export const classAPI = {
   // Teacher assignments
   getTeachers: () => api.get('/classes/teachers/list'),
   assignTeacher: (classId, data) => api.post(`/classes/${classId}/assign-teacher`, data),
+  bulkAssignTeachers: (classId, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post(`/classes/${classId}/assign-teacher/bulk-upload`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
   removeAssignment: (assignmentId) => api.delete(`/classes/assignments/${assignmentId}`),
 };
 
@@ -95,6 +102,25 @@ export const teacherAPI = {
 
 export const auditLogAPI = {
   getAll: (params) => api.get('/audit-logs', { params }),
+};
+
+export const systemAPI = {
+  getDbStatus: () => api.get('/db-status'),
+};
+
+export const assessmentAPI = {
+  // Teacher
+  getTemplates: () => api.get('/assessments/templates'),
+  createTemplate: (data) => api.post('/assessments/templates', data),
+  updateTemplate: (id, data) => api.put(`/assessments/templates/${id}`, data),
+  getHostedExams: () => api.get('/assessments/hosted'),
+  hostExam: (data) => api.post('/assessments/hosted', data),
+  getTeacherMetrics: () => api.get('/assessments/metrics/teacher'),
+
+  // Admin/Student
+  getAdminMetrics: () => api.get('/assessments/metrics/admin'),
+  getStudentMetrics: () => api.get('/assessments/metrics/student'),
+  getStudentAvailable: () => api.get('/assessments/student/available'),
 };
 
 export default api;

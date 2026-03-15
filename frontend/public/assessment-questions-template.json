@@ -1,0 +1,164 @@
+{
+  "questions": [
+    {
+      "type": "mcq",
+      "question": "What is the capital city of India?",
+      "options": ["Mumbai", "New Delhi", "Kolkata", "Chennai"],
+      "answerMode": "single",
+      "correctOptions": [1]
+    },
+    {
+      "type": "mcq",
+      "question": "Which data type is immutable in JavaScript?",
+      "options": ["Array", "Object", "String", "Map"],
+      "answerMode": "single",
+      "correctOptions": [2]
+    },
+    {
+      "type": "blank",
+      "question": "The process of converting JSON text into an object in JavaScript is called ____. ",
+      "blankAnswer": "parsing"
+    },
+    {
+      "type": "mcq",
+      "question": "Which of the following are frontend frameworks?",
+      "options": ["React", "Angular", "Django", "Vue"],
+      "answerMode": "multiple",
+      "correctOptions": [0, 1, 3]
+    },
+    {
+      "type": "mcq",
+      "question": "HTTP status code 404 means:",
+      "options": ["OK", "Created", "Not Found", "Unauthorized"],
+      "answerMode": "single",
+      "correctOptions": [2]
+    },
+    {
+      "type": "mcq",
+      "question": "Which SQL clause is used to filter grouped results?",
+      "options": ["WHERE", "HAVING", "ORDER BY", "LIMIT"],
+      "answerMode": "single",
+      "correctOptions": [1]
+    },
+    {
+      "type": "blank",
+      "question": "In relational databases, a row is also called a ____. ",
+      "answer": "record"
+    },
+    {
+      "type": "mcq",
+      "question": "Choose valid primary colors in additive RGB model.",
+      "options": ["Red", "Green", "Blue", "Yellow"],
+      "answerMode": "multiple",
+      "correctOptions": [0, 1, 2]
+    },
+    {
+      "type": "mcq",
+      "question": "Which command initializes a new Node.js project?",
+      "options": ["npm init", "npm start", "node init", "npm run init"],
+      "answerMode": "single",
+      "correctOptions": [0]
+    },
+    {
+      "type": "mcq",
+      "question": "In React, which hook is used for component state?",
+      "options": ["useRef", "useEffect", "useState", "useMemo"],
+      "answerMode": "single",
+      "correctOptions": [2]
+    },
+    {
+      "type": "blank",
+      "question": "The default branch name in many modern Git repositories is ____. ",
+      "blank_answer": "main"
+    },
+    {
+      "type": "mcq",
+      "question": "Which are NoSQL databases?",
+      "options": ["MongoDB", "PostgreSQL", "Redis", "Cassandra"],
+      "answerMode": "multiple",
+      "correctOptions": [0, 2, 3]
+    },
+    {
+      "type": "mcq",
+      "question": "What does CSS stand for?",
+      "options": ["Computer Style Sheets", "Cascading Style Sheets", "Creative Style Syntax", "Colorful Style Sheets"],
+      "answerMode": "single",
+      "correctOptions": [1]
+    },
+    {
+      "type": "mcq",
+      "question": "Which HTML tag is used for the largest heading?",
+      "options": ["<head>", "<h6>", "<heading>", "<h1>"],
+      "answerMode": "single",
+      "correctOptions": [3]
+    },
+    {
+      "type": "mcq",
+      "question": "Select all valid JavaScript comparison operators.",
+      "options": ["===", "!==", "=!=", "=="],
+      "answerMode": "multiple",
+      "correctOptions": [0, 1, 3]
+    },
+    {
+      "type": "mcq",
+      "question": "Which layer handles routing in the OSI model?",
+      "options": ["Transport", "Network", "Session", "Physical"],
+      "answerMode": "single",
+      "correctOptions": [1]
+    },
+    {
+      "type": "mcq",
+      "question": "Git command to create a new branch is:",
+      "options": ["git checkout", "git branch", "git merge", "git init"],
+      "answerMode": "single",
+      "correctOptions": [1]
+    },
+    {
+      "type": "mcq",
+      "question": "Which are JavaScript package managers?",
+      "options": ["npm", "yarn", "pip", "pnpm"],
+      "answerMode": "multiple",
+      "correctOptions": [0, 1, 3]
+    },
+    {
+      "type": "mcq",
+      "question": "What is the default port for HTTPS?",
+      "options": ["80", "21", "443", "8080"],
+      "answerMode": "single",
+      "correctOptions": [2]
+    },
+    {
+      "type": "blank",
+      "question": "In CSS, the property used to control text size is ____. ",
+      "blankAnswer": "font-size"
+    },
+    {
+      "type": "mcq",
+      "question": "Which keyword declares a constant in JavaScript?",
+      "options": ["var", "let", "const", "static"],
+      "answerMode": "single",
+      "correctOptions": [2]
+    },
+    {
+      "type": "mcq",
+      "question": "Which methods are array iteration methods in JavaScript?",
+      "options": ["map", "filter", "reduce", "split"],
+      "answerMode": "multiple",
+      "correctOptions": [0, 1, 2]
+    },
+    {
+      "type": "mcq",
+      "question": "In SQL, which command removes a table structure and data?",
+      "options": ["DELETE", "TRUNCATE", "DROP", "REMOVE"],
+      "answerMode": "single",
+      "correctOptions": [2]
+    },
+    {
+      "type": "mcq",
+      "question": "Which protocol is used to securely transfer web pages?",
+      "options": ["FTP", "HTTP", "HTTPS", "SMTP"],
+      "answerMode": "single",
+      "correctOptions": [2]
+    }
+  ]
+}
