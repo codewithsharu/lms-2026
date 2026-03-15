@@ -121,6 +121,10 @@ export const assessmentAPI = {
   getAdminMetrics: () => api.get('/assessments/metrics/admin'),
   getStudentMetrics: () => api.get('/assessments/metrics/student'),
   getStudentAvailable: () => api.get('/assessments/student/available'),
+  startStudentAttempt: (hostedAssessmentId) => api.post(`/assessments/student/hosted/${hostedAssessmentId}/start`),
+  getStudentAttempt: (attemptId) => api.get(`/assessments/student/attempts/${attemptId}`),
+  submitStudentAttempt: (attemptId, data) => api.post(`/assessments/student/attempts/${attemptId}/submit`, data),
+  getStudentResults: () => api.get('/assessments/student/results'),
 };
 
 export default api;

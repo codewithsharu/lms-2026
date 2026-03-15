@@ -18,7 +18,12 @@ import TeacherClassStudents from './pages/teacher/ClassStudents';
 import TeacherAssessmentTemplates from './pages/teacher/AssessmentTemplates';
 import TeacherAssessmentTemplateBuilder from './pages/teacher/AssessmentTemplateBuilder';
 import TeacherHostExams from './pages/teacher/HostExams';
+import TeacherHostExamCreate from './pages/teacher/HostExamCreate';
 import StudentDashboard from './pages/student/Dashboard';
+import StudentAssessments from './pages/student/Assessments';
+import StudentResults from './pages/student/Results';
+import StudentAssessmentInstructions from './pages/student/AssessmentInstructions';
+import StudentAssessmentAttempt from './pages/student/AssessmentAttempt';
 import UnderDevelopment from './pages/UnderDevelopment';
 
 function App() {
@@ -184,6 +189,14 @@ function App() {
             }
           />
           <Route
+            path="/teacher/assessments/host/new"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <TeacherHostExamCreate />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/teacher/analytics"
             element={
               <ProtectedRoute allowedRoles={['teacher']}>
@@ -205,7 +218,23 @@ function App() {
             path="/student/assessments"
             element={
               <ProtectedRoute allowedRoles={['student']}>
-                <UnderDevelopment title="Student Assessments" description="Assessment page is under development." />
+                <StudentAssessments />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/student/assessments/:hostedAssessmentId/instructions"
+            element={
+              <ProtectedRoute allowedRoles={['student']}>
+                <StudentAssessmentInstructions />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/student/assessments/attempt/:attemptId"
+            element={
+              <ProtectedRoute allowedRoles={['student']}>
+                <StudentAssessmentAttempt />
               </ProtectedRoute>
             }
           />
@@ -213,7 +242,7 @@ function App() {
             path="/student/results"
             element={
               <ProtectedRoute allowedRoles={['student']}>
-                <UnderDevelopment title="Student Results" description="Results page is under development." />
+                <StudentResults />
               </ProtectedRoute>
             }
           />

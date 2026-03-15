@@ -125,7 +125,8 @@ app.get('/api/db-status', async (req, res) => {
       'teacher_assignments',
       'audit_logs',
       'assessment_templates',
-      'hosted_assessments'
+      'hosted_assessments',
+      'assessment_attempts'
     ];
 
     const expectedTableSchemas = {
@@ -137,7 +138,8 @@ app.get('/api/db-status', async (req, res) => {
       teacher_assignments: ['id', 'teacher_id', 'class_id', 'section_id', 'zone', 'assigned_at', 'assigned_by'],
       audit_logs: ['id', 'user_id', 'user_email', 'user_role', 'action_type', 'resource_type', 'resource_id', 'api_endpoint', 'http_method', 'request_body', 'response_status', 'ip_address', 'user_agent', 'changes', 'metadata', 'created_at'],
       assessment_templates: ['id', 'teacher_id', 'title', 'subject', 'description', 'question_count', 'total_marks', 'passing_percentage', 'template_data', 'is_active', 'created_at', 'updated_at'],
-      hosted_assessments: ['id', 'template_id', 'host_id', 'class_id', 'section_id', 'zone', 'duration_minutes', 'max_attempts', 'result_mode', 'publish_status', 'start_time', 'end_time', 'instructions', 'created_at', 'updated_at']
+      hosted_assessments: ['id', 'template_id', 'host_id', 'class_id', 'section_id', 'zone', 'duration_minutes', 'max_attempts', 'result_mode', 'publish_status', 'start_time', 'end_time', 'instructions', 'created_at', 'updated_at'],
+      assessment_attempts: ['id', 'hosted_assessment_id', 'student_id', 'attempt_number', 'status', 'answers', 'score', 'total_marks', 'percentage', 'correct_count', 'total_questions', 'started_at', 'submitted_at', 'created_at', 'updated_at']
     };
 
     const tables = await Promise.all(expectedTables.map(async (tableName) => {

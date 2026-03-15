@@ -124,6 +124,26 @@ CREATE TABLE IF NOT EXISTS hosted_assessments (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Student attempts (stores one row per exam attempt)
+CREATE TABLE IF NOT EXISTS assessment_attempts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hosted_assessment_id UUID NOT NULL REFERENCES hosted_assessments(id) ON DELETE CASCADE,
+  student_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  attempt_number INTEGER NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'submitted', 'auto_submitted')),
+  answers JSONB DEFAULT '{}'::jsonb,
+  score NUMERIC(6,2),
+  total_marks NUMERIC(6,2),
+  percentage NUMERIC(6,2),
+  correct_count INTEGER DEFAULT 0,
+  total_questions INTEGER DEFAULT 0,
+  started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  submitted_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(hosted_assessment_id, student_id, attempt_number)
+);
+
 -- Indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
@@ -136,6 +156,9 @@ CREATE INDEX IF NOT EXISTS idx_teacher_assignments_teacher ON teacher_assignment
 CREATE INDEX IF NOT EXISTS idx_assessment_templates_teacher ON assessment_templates(teacher_id);
 CREATE INDEX IF NOT EXISTS idx_hosted_assessments_host ON hosted_assessments(host_id);
 CREATE INDEX IF NOT EXISTS idx_hosted_assessments_scope ON hosted_assessments(class_id, section_id, zone);
+CREATE INDEX IF NOT EXISTS idx_assessment_attempts_student ON assessment_attempts(student_id);
+CREATE INDEX IF NOT EXISTS idx_assessment_attempts_hosted ON assessment_attempts(hosted_assessment_id);
+CREATE INDEX IF NOT EXISTS idx_assessment_attempts_status ON assessment_attempts(status);
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
@@ -147,6 +170,7 @@ ALTER TABLE teacher_assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE assessment_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hosted_assessments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assessment_attempts ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies (permissive for now - refine based on needs)
 DO $$
@@ -213,6 +237,13 @@ BEGIN
   ) THEN
     CREATE POLICY "Allow all for authenticated" ON hosted_assessments FOR ALL USING (true);
   END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'assessment_attempts' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON assessment_attempts FOR ALL USING (true);
+  END IF;
 END
 $$;
 
@@ -259,6 +290,11 @@ BEGIN
 
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_hosted_assessments_updated_at') THEN
     CREATE TRIGGER update_hosted_assessments_updated_at BEFORE UPDATE ON hosted_assessments
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_assessment_attempts_updated_at') THEN
+    CREATE TRIGGER update_assessment_attempts_updated_at BEFORE UPDATE ON assessment_attempts
       FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
   END IF;
 END

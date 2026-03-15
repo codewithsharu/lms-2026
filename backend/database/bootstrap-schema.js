@@ -11,7 +11,8 @@ const DEFAULT_REQUIRED_TABLES = [
   'teacher_assignments',
   'audit_logs',
   'assessment_templates',
-  'hosted_assessments'
+  'hosted_assessments',
+  'assessment_attempts'
 ];
 
 const parseBoolean = (value, defaultValue = false) => {
