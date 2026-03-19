@@ -330,7 +330,7 @@ const HostExamCreate = () => {
               <FiArrowLeft className="h-4 w-4" />
               Back to Hosted Exams
             </button>
-            <h1>Scheduled New Exam</h1>
+            <h1>Schedule New Exam</h1>
             <p>Select a template and scope to publish the exam for your students.</p>
           </div>
         </div>

@@ -311,7 +311,7 @@ const HostExams = () => {
           </div>
           <Button onClick={() => navigate('/teacher/assessments/host/new')}>
             <FiPlus className="h-4 w-4" />
-            Scheduled New Exam
+            Schedule New Exam
           </Button>
         </div>
 
