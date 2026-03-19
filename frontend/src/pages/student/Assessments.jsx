@@ -21,9 +21,19 @@ const getExamStatus = (exam) => {
   const start = exam.start_time ? new Date(exam.start_time) : null;
   const end = exam.end_time ? new Date(exam.end_time) : null;
 
+  if (exam.publish_status === 'closed') return 'ended';
+
+  if (start && Number.isNaN(start.getTime())) return 'upcoming';
+  if (end && Number.isNaN(end.getTime())) return 'ended';
+
   if (start && now < start) return 'upcoming';
   if (end && now > end) return 'ended';
-  return 'live';
+
+  if (start && end) return 'live';
+  if (start && !end) return now >= start ? 'live' : 'upcoming';
+  if (!start && end) return now <= end ? 'live' : 'ended';
+
+  return 'upcoming';
 };
 
 const statusBadgeClass = {
@@ -68,6 +78,13 @@ const StudentAssessments = () => {
     };
   }, [exams]);
 
+  const statusOptions = useMemo(() => ([
+    { value: 'all', label: 'All', count: counts.total },
+    { value: 'live', label: 'Live', count: counts.live },
+    { value: 'upcoming', label: 'Upcoming', count: counts.upcoming },
+    { value: 'ended', label: 'Ended', count: counts.ended }
+  ]), [counts]);
+
   const filteredExams = useMemo(() => {
     return exams.filter((exam) => {
       const status = getExamStatus(exam);
@@ -105,9 +122,9 @@ const StudentAssessments = () => {
               placeholder="Search by title or subject"
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
-              className="w-full"
+              className="w-full lg:flex-1"
             />
-            <div className="w-full lg:max-w-60">
+            <div className="w-full md:hidden">
               <label className="form-label">Status Filter</label>
               <div className="relative">
                 <FiFilter className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -116,12 +133,41 @@ const StudentAssessments = () => {
                   value={statusFilter}
                   onChange={(event) => setStatusFilter(event.target.value)}
                 >
-                  <option value="all">All Statuses</option>
-                  <option value="live">Live</option>
-                  <option value="upcoming">Upcoming</option>
-                  <option value="ended">Ended</option>
+                  {statusOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label} ({loading ? '...' : option.count})
+                    </option>
+                  ))}
                 </select>
               </div>
+            </div>
+            <div className="hidden md:flex flex-wrap items-center gap-2">
+              {statusOptions.map((option) => {
+                const isActive = statusFilter === option.value;
+                const countLabel = loading ? '...' : option.count;
+
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setStatusFilter(option.value)}
+                    aria-pressed={isActive}
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
+                      isActive
+                        ? 'bg-blue-50 text-blue-700 border-blue-200'
+                        : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span>{option.label}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      isActive ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                    }`}
+                    >
+                      {countLabel}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </Card.Body>
         </Card>

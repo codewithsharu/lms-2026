@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
   FiActivity,
@@ -75,6 +75,12 @@ const isMeaningfulObject = (value) => {
   return Object.keys(value).length > 0;
 };
 
+const getFallbackStats = (auditLogs = []) => ({
+  successful: auditLogs.filter((log) => log.response_status >= 200 && log.response_status < 300).length,
+  failed: auditLogs.filter((log) => log.response_status >= 400).length,
+  loginEvents: auditLogs.filter((log) => log.action_type === 'LOGIN').length
+});
+
 const AuditLogs = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [actionFilter, setActionFilter] = useState('ALL');
@@ -84,7 +90,9 @@ const AuditLogs = () => {
   const [selectedLog, setSelectedLog] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [logs, setLogs] = useState([]);
+  const [stats, setStats] = useState({ successful: 0, failed: 0, loginEvents: 0 });
   const [loading, setLoading] = useState(true);
+  const [clearingLogs, setClearingLogs] = useState(false);
   const [pagination, setPagination] = useState({ page: 1, limit: 13, total: 0, totalPages: 1 });
   const [autoSync, setAutoSync] = useState(true);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
@@ -105,7 +113,22 @@ const AuditLogs = () => {
         limit: pageSize
       });
 
-      setLogs(response.data?.logs || []);
+      const fetchedLogs = response.data?.logs || [];
+      const fallbackStats = getFallbackStats(fetchedLogs);
+      const apiStats = response.data?.stats;
+
+      setLogs(fetchedLogs);
+      setStats({
+        successful: Number.isFinite(Number(apiStats?.successful))
+          ? Number(apiStats.successful)
+          : fallbackStats.successful,
+        failed: Number.isFinite(Number(apiStats?.failed))
+          ? Number(apiStats.failed)
+          : fallbackStats.failed,
+        loginEvents: Number.isFinite(Number(apiStats?.loginEvents))
+          ? Number(apiStats.loginEvents)
+          : fallbackStats.loginEvents
+      });
       setPagination(response.data?.pagination || { page: 1, limit: pageSize, total: 0, totalPages: 1 });
       setLastSyncedAt(new Date());
 
@@ -116,6 +139,7 @@ const AuditLogs = () => {
     } catch (error) {
       console.error('Failed to fetch audit logs', error);
       setLogs([]);
+      setStats({ successful: 0, failed: 0, loginEvents: 0 });
       setPagination({ page: 1, limit: pageSize, total: 0, totalPages: 1 });
 
       if (!syncErrorNotifiedRef.current) {
@@ -161,25 +185,51 @@ const AuditLogs = () => {
     setCurrentPage(1);
   };
 
+  const clearAuditLogs = async () => {
+    const confirmationMessage = activeFilterCount > 0
+      ? 'Clear all audit logs? Active filters are ignored and every audit record will be deleted. Batch processing will be used for large datasets.'
+      : 'Clear all audit logs? This deletes every audit record. Batch processing will be used for large datasets.';
+
+    if (!window.confirm(confirmationMessage)) {
+      return;
+    }
+
+    try {
+      setClearingLogs(true);
+
+      const response = await auditLogAPI.clearAll({ batch_size: 500 });
+      const deleted = Number(response.data?.deleted) || 0;
+      const batches = Number(response.data?.batches) || 0;
+
+      if (deleted === 0) {
+        toast('No audit logs to clear');
+      } else if (batches > 1) {
+        toast.success(`Cleared ${deleted} audit logs in ${batches} batches`);
+      } else {
+        toast.success(`Cleared ${deleted} audit logs`);
+      }
+
+      setSelectedLog(null);
+
+      if (currentPage !== 1) {
+        setCurrentPage(1);
+      } else {
+        await fetchLogs();
+      }
+    } catch (error) {
+      console.error('Failed to clear audit logs', error);
+      toast.error('Unable to clear audit logs. Please try again.');
+    } finally {
+      setClearingLogs(false);
+    }
+  };
+
   const activeFilterSummary = [
     searchQuery.trim() ? `Search: ${searchQuery.trim()}` : null,
     actionFilter !== 'ALL' ? `Action: ${actionFilter}` : null,
     roleFilter !== 'ALL' ? `Role: ${roleFilter}` : null,
     statusFilter !== 'ALL' ? `Status: ${statusFilter}` : null
   ].filter(Boolean);
-
-  const successCount = useMemo(
-    () => logs.filter((log) => log.response_status >= 200 && log.response_status < 300).length,
-    [logs]
-  );
-  const failureCount = useMemo(
-    () => logs.filter((log) => log.response_status >= 400).length,
-    [logs]
-  );
-  const loginCount = useMemo(
-    () => logs.filter((log) => log.action_type === 'LOGIN').length,
-    [logs]
-  );
 
   const totalPages = Math.max(1, pagination.totalPages || 1);
 
@@ -196,9 +246,9 @@ const AuditLogs = () => {
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard icon={FiActivity} label="Visible Logs" value={pagination.total || 0} iconColorClass="bg-primary" />
-          <StatCard icon={FiCheckCircle} label="Successful" value={successCount} iconColorClass="bg-emerald-600" />
-          <StatCard icon={FiAlertCircle} label="Failed" value={failureCount} iconColorClass="bg-red-500" />
-          <StatCard icon={FiClock} label="Login Events" value={loginCount} iconColorClass="bg-slate-700" />
+          <StatCard icon={FiCheckCircle} label="Successful" value={stats.successful} iconColorClass="bg-emerald-600" />
+          <StatCard icon={FiAlertCircle} label="Failed" value={stats.failed} iconColorClass="bg-red-500" />
+          <StatCard icon={FiClock} label="Login Events" value={stats.loginEvents} iconColorClass="bg-slate-700" />
         </div>
 
         <Card>
@@ -301,12 +351,13 @@ const AuditLogs = () => {
               </SelectField>
 
               <Button
-                variant="secondary"
+                variant="danger"
                 className="w-full sm:w-auto h-[42px] mt-0 lg:mt-[23px] inline-flex items-center justify-center gap-2"
-                onClick={clearAllFilters}
+                onClick={clearAuditLogs}
+                disabled={loading || clearingLogs}
               >
                 <FiRefreshCw className="w-4 h-4" />
-                Clear
+                {clearingLogs ? 'Clearing...' : 'Clear'}
               </Button>
             </div>
 
@@ -441,7 +492,24 @@ const AuditLogs = () => {
                     : 'Showing 0 records'}
                 </p>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+                  <div className="flex items-center gap-2 min-w-0 sm:min-w-65">
+                    <span className="text-xs text-gray-500 whitespace-nowrap">Page</span>
+                    <input
+                      type="range"
+                      min={1}
+                      max={totalPages}
+                      step={1}
+                      value={currentPage}
+                      onChange={(event) => setCurrentPage(Number(event.target.value))}
+                      disabled={loading || totalPages === 1}
+                      aria-label="Select audit log page"
+                      className="w-full accent-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <span className="text-sm text-gray-600 whitespace-nowrap">{currentPage}/{totalPages}</span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
                   <Button
                     variant="secondary"
                     className="!py-1.5 !px-3"
@@ -451,25 +519,6 @@ const AuditLogs = () => {
                     Previous
                   </Button>
 
-                  <div className="hidden sm:flex items-center gap-1">
-                    {Array.from({ length: totalPages }, (_, index) => index + 1).map((page) => (
-                      <button
-                        key={page}
-                        type="button"
-                        onClick={() => setCurrentPage(page)}
-                        className={`h-8 min-w-8 px-2 rounded-lg text-sm font-medium border transition-colors ${
-                          currentPage === page
-                            ? 'bg-blue-50 text-primary border-blue-200'
-                            : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        {page}
-                      </button>
-                    ))}
-                  </div>
-
-                  <span className="sm:hidden text-sm text-gray-600">{currentPage}/{totalPages}</span>
-
                   <Button
                     variant="secondary"
                     className="!py-1.5 !px-3"
@@ -478,6 +527,7 @@ const AuditLogs = () => {
                   >
                     Next
                   </Button>
+                  </div>
                 </div>
               </div>
             </div>

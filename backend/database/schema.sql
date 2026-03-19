@@ -124,6 +124,15 @@ CREATE TABLE IF NOT EXISTS hosted_assessments (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Hosted exam specific student targets (optional per-exam student whitelist)
+CREATE TABLE IF NOT EXISTS hosted_assessment_student_targets (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hosted_assessment_id UUID NOT NULL REFERENCES hosted_assessments(id) ON DELETE CASCADE,
+  student_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(hosted_assessment_id, student_id)
+);
+
 -- Student attempts (stores one row per exam attempt)
 CREATE TABLE IF NOT EXISTS assessment_attempts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -156,6 +165,8 @@ CREATE INDEX IF NOT EXISTS idx_teacher_assignments_teacher ON teacher_assignment
 CREATE INDEX IF NOT EXISTS idx_assessment_templates_teacher ON assessment_templates(teacher_id);
 CREATE INDEX IF NOT EXISTS idx_hosted_assessments_host ON hosted_assessments(host_id);
 CREATE INDEX IF NOT EXISTS idx_hosted_assessments_scope ON hosted_assessments(class_id, section_id, zone);
+CREATE INDEX IF NOT EXISTS idx_hosted_assessment_targets_hosted ON hosted_assessment_student_targets(hosted_assessment_id);
+CREATE INDEX IF NOT EXISTS idx_hosted_assessment_targets_student ON hosted_assessment_student_targets(student_id);
 CREATE INDEX IF NOT EXISTS idx_assessment_attempts_student ON assessment_attempts(student_id);
 CREATE INDEX IF NOT EXISTS idx_assessment_attempts_hosted ON assessment_attempts(hosted_assessment_id);
 CREATE INDEX IF NOT EXISTS idx_assessment_attempts_status ON assessment_attempts(status);
@@ -170,6 +181,7 @@ ALTER TABLE teacher_assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE assessment_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hosted_assessments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hosted_assessment_student_targets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE assessment_attempts ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies (permissive for now - refine based on needs)
@@ -236,6 +248,13 @@ BEGIN
     WHERE schemaname = 'public' AND tablename = 'hosted_assessments' AND policyname = 'Allow all for authenticated'
   ) THEN
     CREATE POLICY "Allow all for authenticated" ON hosted_assessments FOR ALL USING (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'hosted_assessment_student_targets' AND policyname = 'Allow all for authenticated'
+  ) THEN
+    CREATE POLICY "Allow all for authenticated" ON hosted_assessment_student_targets FOR ALL USING (true);
   END IF;
 
   IF NOT EXISTS (

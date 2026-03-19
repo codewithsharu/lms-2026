@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { FiArrowLeft, FiChevronDown, FiSend } from 'react-icons/fi';
@@ -71,6 +71,7 @@ const HostExamCreate = () => {
   const [classes, setClasses] = useState([]);
   const [sections, setSections] = useState([]);
   const [assignmentScope, setAssignmentScope] = useState([]);
+  const [availableStudents, setAvailableStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [hosting, setHosting] = useState(false);
 
@@ -79,6 +80,7 @@ const HostExamCreate = () => {
     class_id: '',
     section_id: '',
     zone: '',
+    specific_student_id: '',
     duration_minutes: 60,
     max_attempts: 1,
     result_mode: 'after_end',
@@ -132,6 +134,7 @@ const HostExamCreate = () => {
 
       const assignments = assignedRes.data?.assignments || [];
       const classMap = new Map();
+      const studentMap = new Map();
 
       assignments.forEach((assignment) => {
         const classId = assignment.class?.id;
@@ -158,6 +161,33 @@ const HostExamCreate = () => {
         if (assignment.zone) {
           entry.zonesSet.add(assignment.zone);
         }
+
+        (assignment.students || []).forEach((student) => {
+          const studentId = student.id;
+          if (!studentId) return;
+
+          if (!studentMap.has(studentId)) {
+            studentMap.set(studentId, {
+              id: studentId,
+              full_name: student.full_name || 'Student',
+              email: student.email || '',
+              classIds: new Set(),
+              sectionIds: new Set(),
+              zones: new Set()
+            });
+          }
+
+          const studentEntry = studentMap.get(studentId);
+          studentEntry.classIds.add(classId);
+
+          if (student.section?.id || assignment.section?.id) {
+            studentEntry.sectionIds.add(student.section?.id || assignment.section?.id);
+          }
+
+          if (student.zone || assignment.zone) {
+            studentEntry.zones.add(student.zone || assignment.zone);
+          }
+        });
       });
 
       const scopeList = Array.from(classMap.values()).map((item) => ({
@@ -169,6 +199,16 @@ const HostExamCreate = () => {
 
       setAssignmentScope(scopeList);
       setClasses(scopeList.map((item) => ({ id: item.classId, name: item.className })));
+      setAvailableStudents(
+        Array.from(studentMap.values()).map((student) => ({
+          id: student.id,
+          full_name: student.full_name,
+          email: student.email,
+          classIds: Array.from(student.classIds),
+          sectionIds: Array.from(student.sectionIds),
+          zones: Array.from(student.zones)
+        }))
+      );
     } catch (error) {
       toast.error(error.response?.data?.error || 'Failed to load hosting data');
     } finally {
@@ -197,6 +237,34 @@ const HostExamCreate = () => {
       setFormData((prev) => ({ ...prev, zone: '' }));
     }
   }, [formData.class_id, assignmentScope, formData.section_id, formData.zone]);
+
+  const filteredStudentOptions = useMemo(() => {
+    return availableStudents.filter((student) => {
+      if (formData.class_id && !student.classIds.includes(formData.class_id)) {
+        return false;
+      }
+
+      if (formData.section_id && !student.sectionIds.includes(formData.section_id)) {
+        return false;
+      }
+
+      if (formData.zone && !student.zones.includes(formData.zone)) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [availableStudents, formData.class_id, formData.section_id, formData.zone]);
+
+  useEffect(() => {
+    if (!formData.specific_student_id) return;
+
+    const existsInScope = filteredStudentOptions.some((student) => student.id === formData.specific_student_id);
+
+    if (!existsInScope) {
+      setFormData((prev) => ({ ...prev, specific_student_id: '' }));
+    }
+  }, [filteredStudentOptions, formData.specific_student_id]);
 
   const handleHostExam = async (event) => {
     event.preventDefault();
@@ -236,7 +304,10 @@ const HostExamCreate = () => {
 
     try {
       setHosting(true);
-      await assessmentAPI.hostExam(formData);
+      await assessmentAPI.hostExam({
+        ...formData,
+        assigned_student_ids: formData.specific_student_id ? [formData.specific_student_id] : []
+      });
       toast.success('Exam hosted successfully');
       navigate('/teacher/assessments/host');
     } catch (error) {
@@ -295,7 +366,7 @@ const HostExamCreate = () => {
               <SelectMenu
                 label="Class"
                 value={formData.class_id}
-                onChange={(nextValue) => setFormData({ ...formData, class_id: nextValue, section_id: '' })}
+                onChange={(nextValue) => setFormData({ ...formData, class_id: nextValue, section_id: '', specific_student_id: '' })}
                 options={[
                   { value: '', label: 'Select Assigned Class' },
                   ...classes.map((cls) => ({ value: cls.id, label: cls.name }))
@@ -305,7 +376,7 @@ const HostExamCreate = () => {
               <SelectMenu
                 label="Section"
                 value={formData.section_id}
-                onChange={(nextValue) => setFormData({ ...formData, section_id: nextValue })}
+                onChange={(nextValue) => setFormData({ ...formData, section_id: nextValue, specific_student_id: '' })}
                 disabled={!formData.class_id}
                 options={[
                   { value: '', label: 'All Sections' },
@@ -316,7 +387,7 @@ const HostExamCreate = () => {
               <SelectMenu
                 label="Zone"
                 value={formData.zone}
-                onChange={(nextValue) => setFormData({ ...formData, zone: nextValue })}
+                onChange={(nextValue) => setFormData({ ...formData, zone: nextValue, specific_student_id: '' })}
                 options={[
                   { value: '', label: 'All Zones' },
                   ...((selectedClassScope?.zones?.length > 0
@@ -325,6 +396,19 @@ const HostExamCreate = () => {
                     value: zone,
                     label: `${zone.charAt(0).toUpperCase() + zone.slice(1)}`
                   })))
+                ]}
+              />
+
+              <SelectMenu
+                label="Specific Student"
+                value={formData.specific_student_id}
+                onChange={(nextValue) => setFormData({ ...formData, specific_student_id: nextValue })}
+                options={[
+                  { value: '', label: 'None (use class/section/zone scope)' },
+                  ...filteredStudentOptions.map((student) => ({
+                    value: student.id,
+                    label: `${student.full_name}${student.email ? ` (${student.email})` : ''}`
+                  }))
                 ]}
               />
 

@@ -102,6 +102,7 @@ export const teacherAPI = {
 
 export const auditLogAPI = {
   getAll: (params) => api.get('/audit-logs', { params }),
+  clearAll: (params) => api.delete('/audit-logs', { params }),
 };
 
 export const systemAPI = {
@@ -113,8 +114,10 @@ export const assessmentAPI = {
   getTemplates: () => api.get('/assessments/templates'),
   createTemplate: (data) => api.post('/assessments/templates', data),
   updateTemplate: (id, data) => api.put(`/assessments/templates/${id}`, data),
+  deleteTemplate: (id) => api.delete(`/assessments/templates/${id}`),
   getHostedExams: () => api.get('/assessments/hosted'),
   hostExam: (data) => api.post('/assessments/hosted', data),
+  updateHostedExam: (id, data) => api.put(`/assessments/hosted/${id}`, data),
   getTeacherMetrics: () => api.get('/assessments/metrics/teacher'),
 
   // Admin/Student

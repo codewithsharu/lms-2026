@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { FiArrowLeft, FiCheckCircle, FiClock, FiDownload, FiLoader, FiPlus, FiSave, FiTrash2, FiUpload, FiX } from 'react-icons/fi';
@@ -107,58 +107,30 @@ const AssessmentTemplateBuilder = () => {
   const [insertAtIndex, setInsertAtIndex] = useState(null);
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [importingJson, setImportingJson] = useState(false);
+  const draftCreationRef = useRef(false);
 
   const isLocalDraft = Boolean(activeTemplate?.isLocalDraft);
+  const isPlaceholderDraft = Boolean(activeTemplate?.isPlaceholder);
 
   const initializeBuilder = async () => {
     try {
       setLoading(true);
 
       if (String(templateId).toLowerCase() === 'new') {
-        try {
-          setBuilderSaving(true);
-          const response = await assessmentAPI.createTemplate({
-            title: `MCQ-${Date.now()}`,
-            subject: 'MCQ',
-            description: 'MCQ question set template',
-            question_count: 0,
-            total_marks: 0,
-            passing_percentage: 40,
-            template_data: { questions: [] }
-          });
-
-          const createdTemplate = response.data.template;
-          setActiveTemplate({ ...createdTemplate, isLocalDraft: false });
-          setTemplateName(createdTemplate.title || '');
-          setMcqList([]);
-          setNewMcq(getEmptyQuestion());
-          setLastSavedAt(null);
-          navigate(`/teacher/assessments/templates/${createdTemplate.id}/builder`, { replace: true });
-          toast.success('Template draft created');
-          return;
-        } catch (error) {
-          const pending = Boolean(error.response?.data?.setupRequired);
-          if (!pending) {
-            throw error;
-          }
-
-          const localId = `local-${Date.now()}`;
-          setSetupRequired(true);
-          setActiveTemplate({ id: localId, title: `MCQ-${Date.now()}`, isLocalDraft: true });
-          setTemplateName(`MCQ-${Date.now()}`);
-          setMcqList([]);
-          setNewMcq(getEmptyQuestion());
-          setLastSavedAt(null);
-          navigate(`/teacher/assessments/templates/${localId}/builder`, { replace: true });
-          return;
-        } finally {
-          setBuilderSaving(false);
-        }
+        const draftName = `MCQ-${Date.now()}`;
+        draftCreationRef.current = false;
+        setSetupRequired(false);
+        setActiveTemplate({ id: 'draft', title: draftName, isLocalDraft: true, isPlaceholder: true });
+        setTemplateName(draftName);
+        setMcqList([]);
+        setNewMcq(getEmptyQuestion());
+        setLastSavedAt(null);
+        return;
       }
 
       if (String(templateId).toLowerCase().startsWith('local-')) {
         setSetupRequired(true);
-        setActiveTemplate({ id: templateId, title: templateId, isLocalDraft: true });
+        setActiveTemplate({ id: templateId, title: templateId, isLocalDraft: true, isPlaceholder: false });
         setTemplateName(templateId);
         setMcqList([]);
         setNewMcq(getEmptyQuestion());
@@ -194,6 +166,58 @@ const AssessmentTemplateBuilder = () => {
     initializeBuilder();
   }, [templateId]);
 
+  useEffect(() => {
+    if (!isPlaceholderDraft || mcqList.length === 0) {
+      return;
+    }
+
+    if (draftCreationRef.current) {
+      return;
+    }
+
+    const createDraft = async () => {
+      try {
+        draftCreationRef.current = true;
+        setBuilderSaving(true);
+
+        const response = await assessmentAPI.createTemplate({
+          title: templateName?.trim() || `MCQ-${Date.now()}`,
+          subject: 'MCQ',
+          description: 'MCQ question set template',
+          question_count: mcqList.length,
+          total_marks: mcqList.length,
+          passing_percentage: 40,
+          template_data: { questions: mcqList }
+        });
+
+        const createdTemplate = response.data.template;
+        setActiveTemplate({ ...createdTemplate, isLocalDraft: false, isPlaceholder: false });
+        setSetupRequired(false);
+        setLastSavedAt(new Date());
+        navigate(`/teacher/assessments/templates/${createdTemplate.id}/builder`, { replace: true });
+        toast.success('Template draft created');
+      } catch (error) {
+        const pending = Boolean(error.response?.data?.setupRequired);
+
+        if (!pending) {
+          toast.error(error.response?.data?.error || 'Failed to create template draft');
+          return;
+        }
+
+        const localId = `local-${Date.now()}`;
+        setSetupRequired(true);
+        setActiveTemplate({ id: localId, title: templateName || localId, isLocalDraft: true, isPlaceholder: false });
+        setLastSavedAt(null);
+        navigate(`/teacher/assessments/templates/${localId}/builder`, { replace: true });
+      } finally {
+        setBuilderSaving(false);
+        draftCreationRef.current = false;
+      }
+    };
+
+    createDraft();
+  }, [isPlaceholderDraft, mcqList, templateName, navigate]);
+
   const isNewQuestionValid = useMemo(() => {
     if (!newMcq.question.trim()) return false;
     if (newMcq.type === 'blank') {
@@ -210,7 +234,7 @@ const AssessmentTemplateBuilder = () => {
   const showsBlankHint = newMcq.type === 'blank' && newMcq.question.trim() && !newMcq.question.includes('____');
 
   const persistTemplate = async (questions, name, showToast = false) => {
-    if (!activeTemplate?.id || isLocalDraft) return;
+    if (!activeTemplate?.id || isLocalDraft || isPlaceholderDraft) return;
 
     try {
       setBuilderSaving(true);
@@ -235,14 +259,14 @@ const AssessmentTemplateBuilder = () => {
   };
 
   useEffect(() => {
-    if (!activeTemplate?.id || isLocalDraft) return;
+    if (!activeTemplate?.id || isLocalDraft || isPlaceholderDraft) return;
 
     const timer = setTimeout(() => {
       persistTemplate(mcqList, templateName, false);
     }, 900);
 
     return () => clearTimeout(timer);
-  }, [mcqList, templateName, activeTemplate?.id, isLocalDraft]);
+  }, [mcqList, templateName, activeTemplate?.id, isLocalDraft, isPlaceholderDraft]);
 
   const resetQuestionForm = () => {
     setNewMcq(getEmptyQuestion());
@@ -509,7 +533,7 @@ const AssessmentTemplateBuilder = () => {
                 }}
               />
             </label>
-            <span className="status-badge info">Template ID: {activeTemplate?.id}</span>
+            <span className="status-badge info">Template ID: {isPlaceholderDraft ? 'Draft (unsaved)' : activeTemplate?.id}</span>
             {setupRequired && <span className="status-badge warning">Local Draft Mode</span>}
           </div>
         </div>

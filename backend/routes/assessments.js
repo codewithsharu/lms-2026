@@ -20,6 +20,16 @@ const isMissingAttemptTableError = (error) => (
   error?.code === 'PGRST205' &&
   String(error?.message || '').includes('assessment_attempts')
 );
+const isMissingHostedTargetTableError = (error) => (
+  error?.code === 'PGRST205' &&
+  String(error?.message || '').includes('hosted_assessment_student_targets')
+);
+
+const HOSTED_EXAM_ALLOWED_RESULT_MODES = ['after_end', 'immediate', 'manual'];
+const HOSTED_EXAM_ALLOWED_PUBLISH_STATUSES = ['draft', 'published', 'closed'];
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const EXAM_SESSION_HEADER = 'x-exam-session-token';
+const EXAM_SESSION_META_KEY = '__sessionMeta';
 
 const safeInt = (value, fallback) => {
   const parsed = Number.parseInt(value, 10);
@@ -29,6 +39,201 @@ const safeInt = (value, fallback) => {
 const safeNumber = (value, fallback) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const normalizeSessionTokenValue = (value) => {
+  if (Array.isArray(value)) {
+    return value.find((entry) => typeof entry === 'string' && entry.trim()) || '';
+  }
+
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  return '';
+};
+
+const getExamSessionToken = (req) => {
+  const fromBody = normalizeSessionTokenValue(req.body?.sessionToken);
+  const fromQuery = normalizeSessionTokenValue(req.query?.sessionToken);
+  const fromHeader = normalizeSessionTokenValue(req.get(EXAM_SESSION_HEADER));
+
+  return fromBody || fromQuery || fromHeader || null;
+};
+
+const getAttemptSessionMeta = (answers) => {
+  if (!answers || typeof answers !== 'object') {
+    return { token: null, updatedAt: null };
+  }
+
+  const meta = answers[EXAM_SESSION_META_KEY];
+  if (!meta || typeof meta !== 'object') {
+    return { token: null, updatedAt: null };
+  }
+
+  return {
+    token: meta.token || null,
+    updatedAt: meta.updatedAt || null
+  };
+};
+
+const applyAttemptSessionMeta = (answers, sessionToken) => ({
+  ...(answers && typeof answers === 'object' ? answers : {}),
+  [EXAM_SESSION_META_KEY]: {
+    token: sessionToken,
+    updatedAt: new Date().toISOString()
+  }
+});
+
+const buildSessionConflictResponse = (message, attemptId) => ({
+  error: message,
+  sessionConflict: true,
+  attemptId
+});
+
+const isUuid = (value) => UUID_REGEX.test(String(value || ''));
+
+const normalizeStudentIdList = (rawValue) => {
+  if (!Array.isArray(rawValue)) {
+    return { normalized: [], invalid: [] };
+  }
+
+  const sanitized = rawValue
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  const invalid = sanitized.filter((value) => !isUuid(value));
+  const normalized = [...new Set(sanitized.filter((value) => isUuid(value)))];
+
+  return { normalized, invalid };
+};
+
+const doesTeacherAssignmentMatchStudent = (assignment, studentDetail) => {
+  if (!assignment || !studentDetail) return false;
+
+  const classMatch = !assignment.class_id || assignment.class_id === studentDetail.class_id;
+  const sectionMatch = !assignment.section_id || assignment.section_id === studentDetail.section_id;
+  const zoneMatch = !assignment.zone || assignment.zone === studentDetail.zone;
+
+  return classMatch && sectionMatch && zoneMatch;
+};
+
+const getTeacherAssignmentScopes = async (teacherId) => {
+  const { data, error } = await supabase
+    .from('teacher_assignments')
+    .select('class_id, section_id, zone')
+    .eq('teacher_id', teacherId);
+
+  if (error) throw error;
+
+  return data || [];
+};
+
+const getTeacherAllowedStudentIdSet = async (teacherId) => {
+  const assignmentScopes = await getTeacherAssignmentScopes(teacherId);
+
+  if (assignmentScopes.length === 0) {
+    return new Set();
+  }
+
+  const classIds = [...new Set(
+    assignmentScopes
+      .map((assignment) => assignment.class_id)
+      .filter(Boolean)
+  )];
+
+  if (classIds.length === 0) {
+    return new Set();
+  }
+
+  const { data: studentDetails, error: studentError } = await supabase
+    .from('student_details')
+    .select('user_id, class_id, section_id, zone')
+    .in('class_id', classIds);
+
+  if (studentError) throw studentError;
+
+  const allowedStudentIds = new Set();
+
+  (studentDetails || []).forEach((studentDetail) => {
+    const isAllowed = assignmentScopes.some((assignment) => doesTeacherAssignmentMatchStudent(assignment, studentDetail));
+    if (isAllowed && studentDetail.user_id) {
+      allowedStudentIds.add(studentDetail.user_id);
+    }
+  });
+
+  return allowedStudentIds;
+};
+
+const replaceHostedExamStudentTargets = async (hostedAssessmentId, studentIds = []) => {
+  const { error: deleteError } = await supabase
+    .from('hosted_assessment_student_targets')
+    .delete()
+    .eq('hosted_assessment_id', hostedAssessmentId);
+
+  if (deleteError && isMissingHostedTargetTableError(deleteError)) {
+    if (studentIds.length > 0) {
+      throw deleteError;
+    }
+
+    return [];
+  }
+
+  if (deleteError) throw deleteError;
+
+  if (studentIds.length === 0) {
+    return [];
+  }
+
+  const insertRows = studentIds.map((studentId) => ({
+    hosted_assessment_id: hostedAssessmentId,
+    student_id: studentId
+  }));
+
+  const { data: insertedTargets, error: insertError } = await supabase
+    .from('hosted_assessment_student_targets')
+    .insert(insertRows)
+    .select('hosted_assessment_id, student_id, student:student_id(id, full_name, email)');
+
+  if (insertError) throw insertError;
+
+  return insertedTargets || [];
+};
+
+const getStudentTargetMapForHostedExams = async (hostedAssessmentIds = []) => {
+  const uniqueIds = [...new Set((hostedAssessmentIds || []).filter(Boolean))];
+
+  if (uniqueIds.length === 0) {
+    return { map: {}, setupRequired: false };
+  }
+
+  const { data, error } = await supabase
+    .from('hosted_assessment_student_targets')
+    .select('hosted_assessment_id, student_id, student:student_id(id, full_name, email)')
+    .in('hosted_assessment_id', uniqueIds);
+
+  if (error && isMissingHostedTargetTableError(error)) {
+    return { map: {}, setupRequired: true };
+  }
+
+  if (error) throw error;
+
+  const mapped = (data || []).reduce((acc, row) => {
+    if (!row?.hosted_assessment_id) return acc;
+
+    if (!acc[row.hosted_assessment_id]) {
+      acc[row.hosted_assessment_id] = [];
+    }
+
+    acc[row.hosted_assessment_id].push({
+      student_id: row.student_id,
+      student: row.student || null
+    });
+
+    return acc;
+  }, {});
+
+  return { map: mapped, setupRequired: false };
 };
 
 const normalizeQuestionList = (templateData) => {
@@ -102,10 +307,16 @@ const isWithinAttemptWindow = (exam) => {
   return { allowed: true };
 };
 
-const isExamAssignedToStudent = (exam, studentDetail) => {
+const isExamAssignedToStudent = (exam, studentDetail, studentId, targetedStudentIds = []) => {
   if (!exam || !studentDetail) return false;
 
-  if (exam.class_id !== studentDetail.class_id) return false;
+  const targetedSet = new Set((targetedStudentIds || []).filter(Boolean));
+
+  if (targetedSet.size > 0) {
+    return targetedSet.has(studentId);
+  }
+
+  if (exam.class_id && exam.class_id !== studentDetail.class_id) return false;
 
   const sectionMatch = !exam.section_id || exam.section_id === studentDetail.section_id;
   const zoneMatch = !exam.zone || exam.zone === studentDetail.zone;
@@ -328,6 +539,37 @@ router.put('/templates/:id', verifyToken, hasRole('teacher'), async (req, res) =
   }
 });
 
+// Teacher: delete template (soft delete)
+router.delete('/templates/:id', verifyToken, hasRole('teacher'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: template, error } = await supabase
+      .from('assessment_templates')
+      .update({ is_active: false })
+      .eq('id', id)
+      .eq('teacher_id', req.user.id)
+      .select('id')
+      .single();
+
+    if (error && isMissingAssessmentTableError(error)) {
+      return res.status(503).json({
+        error: 'Assessment module is not initialized yet. Please run migration when DB access is available.',
+        setupRequired: true
+      });
+    }
+
+    if (error || !template) {
+      return res.status(404).json({ error: 'Template not found for this teacher' });
+    }
+
+    res.json({ message: 'Template deleted successfully', templateId: template.id });
+  } catch (error) {
+    console.error('Delete template error:', error);
+    res.status(500).json({ error: getApiErrorMessage(error, 'Failed to delete template') });
+  }
+});
+
 // Teacher: host exam from existing template
 router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
   try {
@@ -342,11 +584,27 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
       publish_status,
       start_time,
       end_time,
-      instructions
+      instructions,
+      assigned_student_ids = []
     } = req.body;
 
     if (!template_id || !duration_minutes || !max_attempts || !result_mode || !publish_status) {
       return res.status(400).json({ error: 'template_id, duration, attempts, result mode and publish status are required' });
+    }
+
+    const { normalized: normalizedStudentIds, invalid: invalidStudentIds } = normalizeStudentIdList(assigned_student_ids);
+
+    if (invalidStudentIds.length > 0) {
+      return res.status(400).json({ error: 'One or more assigned student IDs are invalid' });
+    }
+
+    if (normalizedStudentIds.length > 0) {
+      const allowedStudents = await getTeacherAllowedStudentIdSet(req.user.id);
+      const unauthorizedStudents = normalizedStudentIds.filter((studentId) => !allowedStudents.has(studentId));
+
+      if (unauthorizedStudents.length > 0) {
+        return res.status(403).json({ error: 'One or more selected students are outside your class assignment scope' });
+      }
     }
 
     const parsedDuration = safeInt(duration_minutes, 0);
@@ -360,13 +618,11 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
       return res.status(400).json({ error: 'Max attempts must be at least 1' });
     }
 
-    const allowedResultModes = ['after_end', 'immediate', 'manual'];
-    if (!allowedResultModes.includes(result_mode)) {
+    if (!HOSTED_EXAM_ALLOWED_RESULT_MODES.includes(result_mode)) {
       return res.status(400).json({ error: 'Invalid result mode' });
     }
 
-    const allowedPublishStatuses = ['draft', 'published', 'closed'];
-    if (!allowedPublishStatuses.includes(publish_status)) {
+    if (!HOSTED_EXAM_ALLOWED_PUBLISH_STATUSES.includes(publish_status)) {
       return res.status(400).json({ error: 'Invalid publish status' });
     }
 
@@ -437,7 +693,33 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
 
     if (error) throw error;
 
-    res.status(201).json({ message: 'Exam hosted successfully', hostedExam: data });
+    let specificStudents = [];
+
+    try {
+      const targetRows = await replaceHostedExamStudentTargets(data.id, normalizedStudentIds);
+      specificStudents = targetRows.map((item) => ({
+        id: item.student?.id || item.student_id,
+        full_name: item.student?.full_name || null,
+        email: item.student?.email || null
+      }));
+    } catch (targetError) {
+      if (isMissingHostedTargetTableError(targetError)) {
+        return res.status(503).json({
+          error: 'Hosted assessment student target module is not initialized yet. Please run migration when DB access is available.',
+          setupRequired: true
+        });
+      }
+
+      throw targetError;
+    }
+
+    res.status(201).json({
+      message: 'Exam hosted successfully',
+      hostedExam: {
+        ...data,
+        specific_students: specificStudents
+      }
+    });
   } catch (error) {
     console.error('Host exam error:', error);
     res.status(500).json({ error: getApiErrorMessage(error, 'Failed to host exam') });
@@ -464,10 +746,206 @@ router.get('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
 
     if (error) throw error;
 
-    res.json({ hostedExams: data || [] });
+    const hostedExams = data || [];
+    const hostedExamIds = hostedExams.map((exam) => exam.id);
+    const { map: targetMap, setupRequired } = await getStudentTargetMapForHostedExams(hostedExamIds);
+
+    const enrichedExams = hostedExams.map((exam) => ({
+      ...exam,
+      specific_students: (targetMap[exam.id] || []).map((item) => ({
+        id: item.student?.id || item.student_id,
+        full_name: item.student?.full_name || null,
+        email: item.student?.email || null
+      }))
+    }));
+
+    res.json({
+      hostedExams: enrichedExams,
+      ...(setupRequired ? { setupRequired: true } : {})
+    });
   } catch (error) {
     console.error('List hosted exams error:', error);
     res.status(500).json({ error: getApiErrorMessage(error, 'Failed to fetch hosted exams') });
+  }
+});
+
+// Teacher: update hosted exam after creation
+router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: existingHostedExam, error: existingError } = await supabase
+      .from('hosted_assessments')
+      .select('*')
+      .eq('id', id)
+      .eq('host_id', req.user.id)
+      .single();
+
+    if (existingError && isMissingHostedTableError(existingError)) {
+      return res.status(503).json({
+        error: 'Assessment module is not initialized yet. Please run migration when DB access is available.',
+        setupRequired: true
+      });
+    }
+
+    if (existingError || !existingHostedExam) {
+      return res.status(404).json({ error: 'Hosted exam not found for this teacher' });
+    }
+
+    const {
+      class_id,
+      section_id,
+      zone,
+      duration_minutes,
+      max_attempts,
+      result_mode,
+      publish_status,
+      start_time,
+      end_time,
+      instructions,
+      assigned_student_ids
+    } = req.body;
+
+    const resolvedDuration = duration_minutes !== undefined
+      ? safeInt(duration_minutes, 0)
+      : safeInt(existingHostedExam.duration_minutes, 0);
+    const resolvedAttempts = max_attempts !== undefined
+      ? safeInt(max_attempts, 0)
+      : safeInt(existingHostedExam.max_attempts, 0);
+    const resolvedResultMode = result_mode !== undefined
+      ? String(result_mode)
+      : existingHostedExam.result_mode;
+    const resolvedPublishStatus = publish_status !== undefined
+      ? String(publish_status)
+      : existingHostedExam.publish_status;
+
+    if (resolvedDuration <= 0) {
+      return res.status(400).json({ error: 'Duration must be greater than 0 minutes' });
+    }
+
+    if (resolvedAttempts <= 0) {
+      return res.status(400).json({ error: 'Max attempts must be at least 1' });
+    }
+
+    if (!HOSTED_EXAM_ALLOWED_RESULT_MODES.includes(resolvedResultMode)) {
+      return res.status(400).json({ error: 'Invalid result mode' });
+    }
+
+    if (!HOSTED_EXAM_ALLOWED_PUBLISH_STATUSES.includes(resolvedPublishStatus)) {
+      return res.status(400).json({ error: 'Invalid publish status' });
+    }
+
+    const startInput = start_time !== undefined
+      ? (start_time || null)
+      : existingHostedExam.start_time;
+    const endInput = end_time !== undefined
+      ? (end_time || null)
+      : existingHostedExam.end_time;
+
+    const parsedStartTime = startInput ? new Date(startInput) : null;
+    const parsedEndTime = endInput ? new Date(endInput) : null;
+
+    if (parsedStartTime && Number.isNaN(parsedStartTime.getTime())) {
+      return res.status(400).json({ error: 'Invalid start time' });
+    }
+
+    if (parsedEndTime && Number.isNaN(parsedEndTime.getTime())) {
+      return res.status(400).json({ error: 'Invalid end time' });
+    }
+
+    if (parsedStartTime && parsedEndTime && parsedEndTime <= parsedStartTime) {
+      return res.status(400).json({ error: 'End time must be after start time' });
+    }
+
+    if (resolvedPublishStatus === 'published' && (!parsedStartTime || !parsedEndTime)) {
+      return res.status(400).json({ error: 'Start and end time are required to publish an exam' });
+    }
+
+    let normalizedStudentIds = null;
+
+    if (assigned_student_ids !== undefined) {
+      const { normalized, invalid } = normalizeStudentIdList(assigned_student_ids);
+
+      if (invalid.length > 0) {
+        return res.status(400).json({ error: 'One or more assigned student IDs are invalid' });
+      }
+
+      if (normalized.length > 0) {
+        const allowedStudents = await getTeacherAllowedStudentIdSet(req.user.id);
+        const unauthorizedStudents = normalized.filter((studentId) => !allowedStudents.has(studentId));
+
+        if (unauthorizedStudents.length > 0) {
+          return res.status(403).json({ error: 'One or more selected students are outside your class assignment scope' });
+        }
+      }
+
+      normalizedStudentIds = normalized;
+    }
+
+    const updatePayload = {
+      class_id: class_id !== undefined ? (class_id || null) : existingHostedExam.class_id,
+      section_id: section_id !== undefined ? (section_id || null) : existingHostedExam.section_id,
+      zone: zone !== undefined ? (zone || null) : existingHostedExam.zone,
+      duration_minutes: resolvedDuration,
+      max_attempts: resolvedAttempts,
+      result_mode: resolvedResultMode,
+      publish_status: resolvedPublishStatus,
+      start_time: parsedStartTime ? parsedStartTime.toISOString() : null,
+      end_time: parsedEndTime ? parsedEndTime.toISOString() : null,
+      instructions: instructions !== undefined
+        ? (instructions ? String(instructions).trim() : null)
+        : existingHostedExam.instructions
+    };
+
+    const { data: updatedHostedExam, error: updateError } = await supabase
+      .from('hosted_assessments')
+      .update(updatePayload)
+      .eq('id', id)
+      .eq('host_id', req.user.id)
+      .select('*')
+      .single();
+
+    if (updateError) throw updateError;
+
+    let specificStudents = [];
+
+    if (normalizedStudentIds !== null) {
+      try {
+        const targetRows = await replaceHostedExamStudentTargets(id, normalizedStudentIds);
+        specificStudents = targetRows.map((item) => ({
+          id: item.student?.id || item.student_id,
+          full_name: item.student?.full_name || null,
+          email: item.student?.email || null
+        }));
+      } catch (targetError) {
+        if (isMissingHostedTargetTableError(targetError)) {
+          return res.status(503).json({
+            error: 'Hosted assessment student target module is not initialized yet. Please run migration when DB access is available.',
+            setupRequired: true
+          });
+        }
+
+        throw targetError;
+      }
+    } else {
+      const { map: targetMap } = await getStudentTargetMapForHostedExams([id]);
+      specificStudents = (targetMap[id] || []).map((item) => ({
+        id: item.student?.id || item.student_id,
+        full_name: item.student?.full_name || null,
+        email: item.student?.email || null
+      }));
+    }
+
+    res.json({
+      message: 'Hosted exam updated successfully',
+      hostedExam: {
+        ...updatedHostedExam,
+        specific_students: specificStudents
+      }
+    });
+  } catch (error) {
+    console.error('Update hosted exam error:', error);
+    res.status(500).json({ error: getApiErrorMessage(error, 'Failed to update hosted exam') });
   }
 });
 
@@ -567,7 +1045,7 @@ router.get('/student/available', verifyToken, hasRole('student'), async (req, re
       return res.status(404).json({ error: 'Student details not found' });
     }
 
-    let query = supabase
+    const { data: hostedExams, error } = await supabase
       .from('hosted_assessments')
       .select(`
         id,
@@ -582,11 +1060,8 @@ router.get('/student/available', verifyToken, hasRole('student'), async (req, re
         zone,
         template:template_id(id, title, subject, question_count, total_marks, passing_percentage)
       `)
-      .eq('publish_status', 'published')
-      .eq('class_id', studentDetail.class_id)
+      .in('publish_status', ['published', 'closed'])
       .order('created_at', { ascending: false });
-
-    const { data: hostedExams, error } = await query;
 
     if (error && isMissingHostedTableError(error)) {
       return res.json({ exams: [], setupRequired: true });
@@ -594,7 +1069,13 @@ router.get('/student/available', verifyToken, hasRole('student'), async (req, re
 
     if (error) throw error;
 
-    const filtered = (hostedExams || []).filter((exam) => isExamAssignedToStudent(exam, studentDetail));
+    const hostedExamList = hostedExams || [];
+    const { map: targetMap } = await getStudentTargetMapForHostedExams(hostedExamList.map((exam) => exam.id));
+
+    const filtered = hostedExamList.filter((exam) => {
+      const targetedStudentIds = (targetMap[exam.id] || []).map((item) => item.student_id);
+      return isExamAssignedToStudent(exam, studentDetail, req.user.id, targetedStudentIds);
+    });
     const hostedIds = filtered.map((exam) => exam.id);
 
     let attemptsByHosted = {};
@@ -684,7 +1165,10 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
       return res.status(400).json({ error: 'This assessment is not published' });
     }
 
-    if (!isExamAssignedToStudent(hostedExam, studentDetail)) {
+    const { map: startTargetMap } = await getStudentTargetMapForHostedExams([hostedAssessmentId]);
+    const targetedStudentIds = (startTargetMap[hostedAssessmentId] || []).map((item) => item.student_id);
+
+    if (!isExamAssignedToStudent(hostedExam, studentDetail, req.user.id, targetedStudentIds)) {
       return res.status(403).json({ error: 'This assessment is not assigned to your class scope' });
     }
 
@@ -794,6 +1278,8 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
 router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), async (req, res) => {
   try {
     const { attemptId } = req.params;
+    const forceTakeover = String(req.query?.forceTakeover || '').toLowerCase() === 'true';
+    const sessionToken = getExamSessionToken(req);
 
     const { data: attempt, error: attemptError } = await supabase
       .from('assessment_attempts')
@@ -822,38 +1308,65 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
       return res.status(404).json({ error: 'Attempt not found' });
     }
 
-    const questions = normalizeQuestionList(attempt.hosted?.template?.template_data);
+    const sessionMeta = getAttemptSessionMeta(attempt.answers);
+    const hasDifferentSession = Boolean(sessionMeta.token && sessionToken && sessionMeta.token !== sessionToken);
+
+    if (hasDifferentSession && !forceTakeover) {
+      return res.status(409).json(buildSessionConflictResponse(
+        'This attempt is active in another browser session. Resume here to safely continue.',
+        attempt.id
+      ));
+    }
+
+    let resolvedAttempt = attempt;
+
+    if (sessionToken && (!sessionMeta.token || forceTakeover)) {
+      const { data: updatedAttempt, error: updateError } = await supabase
+        .from('assessment_attempts')
+        .update({
+          answers: applyAttemptSessionMeta(attempt.answers, sessionToken)
+        })
+        .eq('id', attempt.id)
+        .select('*')
+        .single();
+
+      if (updateError) throw updateError;
+
+      resolvedAttempt = updatedAttempt;
+    }
+
+    const questions = normalizeQuestionList(resolvedAttempt.hosted?.template?.template_data);
 
     if (questions.length === 0) {
       return res.status(400).json({ error: 'Assessment questions are not configured' });
     }
 
-    const remainingSeconds = getRemainingSeconds(attempt, attempt.hosted);
+    const remainingSeconds = getRemainingSeconds(resolvedAttempt, resolvedAttempt.hosted);
 
     res.json({
       hostedAssessment: {
-        id: attempt.hosted?.id,
-        title: attempt.hosted?.template?.title || 'Assessment',
-        subject: attempt.hosted?.template?.subject || 'N/A',
-        instructions: attempt.hosted?.instructions || '',
-        result_mode: attempt.hosted?.result_mode,
-        start_time: attempt.hosted?.start_time,
-        end_time: attempt.hosted?.end_time,
-        duration_minutes: attempt.hosted?.duration_minutes,
-        max_attempts: attempt.hosted?.max_attempts
+        id: resolvedAttempt.hosted?.id,
+        title: resolvedAttempt.hosted?.template?.title || 'Assessment',
+        subject: resolvedAttempt.hosted?.template?.subject || 'N/A',
+        instructions: resolvedAttempt.hosted?.instructions || '',
+        result_mode: resolvedAttempt.hosted?.result_mode,
+        start_time: resolvedAttempt.hosted?.start_time,
+        end_time: resolvedAttempt.hosted?.end_time,
+        duration_minutes: resolvedAttempt.hosted?.duration_minutes,
+        max_attempts: resolvedAttempt.hosted?.max_attempts
       },
       attempt: {
-        id: attempt.id,
-        attempt_number: attempt.attempt_number,
-        status: attempt.status,
-        started_at: attempt.started_at,
-        submitted_at: attempt.submitted_at,
-        answers: attempt.answers || {},
-        score: attempt.score,
-        total_marks: attempt.total_marks,
-        percentage: attempt.percentage,
-        correct_count: attempt.correct_count,
-        total_questions: attempt.total_questions,
+        id: resolvedAttempt.id,
+        attempt_number: resolvedAttempt.attempt_number,
+        status: resolvedAttempt.status,
+        started_at: resolvedAttempt.started_at,
+        submitted_at: resolvedAttempt.submitted_at,
+        answers: resolvedAttempt.answers || {},
+        score: resolvedAttempt.score,
+        total_marks: resolvedAttempt.total_marks,
+        percentage: resolvedAttempt.percentage,
+        correct_count: resolvedAttempt.correct_count,
+        total_questions: resolvedAttempt.total_questions,
         remaining_seconds: remainingSeconds
       },
       questions: sanitizeQuestionsForStudent(questions)
@@ -1081,7 +1594,6 @@ router.get('/student/results', verifyToken, hasRole('student'), async (req, res)
         template:template_id(id, title, subject, question_count, total_marks, passing_percentage)
       `)
       .eq('publish_status', 'published')
-      .eq('class_id', studentDetail.class_id)
       .order('created_at', { ascending: false });
 
     if (hostedError && isMissingHostedTableError(hostedError)) {
@@ -1090,7 +1602,13 @@ router.get('/student/results', verifyToken, hasRole('student'), async (req, res)
 
     if (hostedError) throw hostedError;
 
-    const scopedExams = (hostedExams || []).filter((exam) => isExamAssignedToStudent(exam, studentDetail));
+    const hostedExamList = hostedExams || [];
+    const { map: resultTargetMap } = await getStudentTargetMapForHostedExams(hostedExamList.map((exam) => exam.id));
+
+    const scopedExams = hostedExamList.filter((exam) => {
+      const targetedStudentIds = (resultTargetMap[exam.id] || []).map((item) => item.student_id);
+      return isExamAssignedToStudent(exam, studentDetail, req.user.id, targetedStudentIds);
+    });
     const hostedIds = scopedExams.map((exam) => exam.id);
 
     let attempts = [];
@@ -1165,8 +1683,7 @@ router.get('/metrics/student', verifyToken, hasRole('student'), async (req, res)
     const { data: hostedExams, error } = await supabase
       .from('hosted_assessments')
       .select('id, class_id, section_id, zone, publish_status, start_time, end_time')
-      .eq('publish_status', 'published')
-      .eq('class_id', studentDetail.class_id);
+      .eq('publish_status', 'published');
 
     if (error && isMissingHostedTableError(error)) {
       return res.json({ assigned: 0, inProgress: 0, upcoming: 0, completed: 0, setupRequired: true });
@@ -1176,7 +1693,13 @@ router.get('/metrics/student', verifyToken, hasRole('student'), async (req, res)
 
     const now = new Date();
 
-    const exams = (hostedExams || []).filter((exam) => isExamAssignedToStudent(exam, studentDetail));
+    const hostedExamList = hostedExams || [];
+    const { map: metricTargetMap } = await getStudentTargetMapForHostedExams(hostedExamList.map((exam) => exam.id));
+
+    const exams = hostedExamList.filter((exam) => {
+      const targetedStudentIds = (metricTargetMap[exam.id] || []).map((item) => item.student_id);
+      return isExamAssignedToStudent(exam, studentDetail, req.user.id, targetedStudentIds);
+    });
 
     const inProgress = exams.filter((exam) => {
       if (!exam.start_time || !exam.end_time) return false;
