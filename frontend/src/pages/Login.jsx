@@ -57,36 +57,38 @@ const Login = () => {
 
         {/* Top — Logo */}
         <div className="login-brand-top">
-          <p className="login-wordmark">Atelier Portal</p>
+          <p className="login-wordmark">Assignment Portal</p>
         </div>
 
         {/* Center — Headline + Features */}
         <div className="login-brand-center">
-          <h1>Calm systems for focused teams</h1>
-          <p className="login-brand-tagline">A thoughtful workspace where every detail supports clarity.</p>
+          <h1 style={{ fontWeight: 400, lineHeight: 1.1, fontSize: '2.1rem', maxWidth: 420 }}>
+            Smart Assignment Management<br />for Students & Faculty
+          </h1>
+          <p className="login-brand-tagline">A centralized academic platform designed to simplify assignment submission, tracking, and evaluation.</p>
 
           <div className="login-features">
             <div className="login-feature">
               <div className="login-feature-dot" />
-              <span>Purposeful workflows with less friction</span>
+              <span>Efficient assignment submission and management</span>
             </div>
             <div className="login-feature">
               <div className="login-feature-dot" />
-              <span>Quiet analytics that reveal what matters</span>
+              <span>Real-time progress tracking and notifications</span>
             </div>
             <div className="login-feature">
               <div className="login-feature-dot" />
-              <span>Secure, role-aware access by design</span>
+              <span>Secure access for students, faculty, and administrators</span>
             </div>
             <div className="login-feature">
               <div className="login-feature-dot" />
-              <span>Reliable foundations that scale naturally</span>
+              <span>Reliable system built to support academic workflows</span>
             </div>
           </div>
         </div>
 
         <div className="login-brand-bottom">
-          <p className="login-trust-line">Trusted by teams that value precision and calm.</p>
+          <p className="login-trust-line">Trusted by institutions to streamline academic tasks and collaboration.</p>
         </div>
       </div>
 
@@ -189,7 +191,7 @@ const Login = () => {
             </p>
           </div>
 
-          <p className="login-copyright">© 2026 Atelier Portal</p>
+          <p className="login-copyright">© 2026 Assignment Portal</p>
         </div>
       </div>
     </div>
