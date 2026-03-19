@@ -76,7 +76,7 @@ const AssessmentTemplates = () => {
           </div>
           <Button onClick={() => navigate('/teacher/assessments/templates/new/builder')}>
             <FiPlus className="h-4 w-4" />
-            Start MCQ Template
+            Create Question bank
           </Button>
         </div>
 
@@ -155,7 +155,7 @@ const AssessmentTemplates = () => {
                 <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-blue-100 text-primary">
                   <FiBookOpen className="h-7 w-7" />
                 </div>
-                <p className="text-base font-medium text-slate-800">No templates yet</p>
+                <p className="text-base font-medium text-slate-800">No Question bank created at</p>
                 <p className="mt-1 text-sm text-slate-500">Open the dedicated builder page and create your first template.</p>
               </div>
             )}

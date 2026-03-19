@@ -306,18 +306,18 @@ const HostExams = () => {
       <div className="app-page">
         <div className="page-header flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1>Scheduled Exam List</h1>
+            <h1>Scheduled Exam</h1>
             <p>Review your hosted exams first, then create a new hosted exam from a template.</p>
           </div>
           <Button onClick={() => navigate('/teacher/assessments/host/new')}>
             <FiPlus className="h-4 w-4" />
-            Host New Exam
+            Scheduled New Exam
           </Button>
         </div>
 
         <Card>
           <Card.Header>
-            <h2 className="section-title">Hosted Exam List</h2>
+            <h2 className="section-title">Scheduled Exam List</h2>
           </Card.Header>
           <Card.Body>
             {loading ? (
@@ -404,8 +404,8 @@ const HostExams = () => {
                 <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-blue-100 text-primary">
                   <FiPlayCircle className="h-7 w-7" />
                 </div>
-                <p className="text-base font-medium text-slate-800">No hosted exams yet</p>
-                <p className="mt-1 text-sm text-slate-500">Click “Host New Exam” to create and publish assessments for your students.</p>
+                <p className="text-base font-medium text-slate-800">No Scheduled exams yet</p>
+                <p className="mt-1 text-sm text-slate-500">Click “Scheduled Exam” to create and publish assessments for your students.</p>
               </div>
             )}
           </Card.Body>
