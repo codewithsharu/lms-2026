@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { FiBookOpen, FiCheckCircle, FiEdit2, FiEye, FiFileText, FiHash, FiPlus } from 'react-icons/fi';
+import { FiBookOpen, FiCheckCircle, FiEdit2, FiEye, FiFileText, FiHash, FiPlus, FiTrash2 } from 'react-icons/fi';
 import Layout from '../../components/Layout';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
@@ -13,6 +13,7 @@ const AssessmentTemplates = () => {
   const [templates, setTemplates] = useState([]);
   const [setupRequired, setSetupRequired] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [deletingTemplateId, setDeletingTemplateId] = useState(null);
   const [previewTemplate, setPreviewTemplate] = useState(null);
 
   const getTemplateQuestions = (template) => {
@@ -43,6 +44,24 @@ const AssessmentTemplates = () => {
     fetchTemplates();
   }, []);
 
+  const handleDeleteTemplate = async (template) => {
+    if (!template?.id) return;
+
+    const confirmed = window.confirm(`Delete template "${template.title || 'Untitled'}"? This will remove it from your list.`);
+    if (!confirmed) return;
+
+    try {
+      setDeletingTemplateId(template.id);
+      await assessmentAPI.deleteTemplate(template.id);
+      toast.success('Template deleted successfully');
+      fetchTemplates();
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to delete template');
+    } finally {
+      setDeletingTemplateId(null);
+    }
+  };
+
   const previewQuestions = getTemplateQuestions(previewTemplate);
   const previewMcqCount = previewQuestions.filter((question) => (question?.type || 'mcq') !== 'blank').length;
   const previewBlankCount = previewQuestions.filter((question) => question?.type === 'blank').length;
@@ -52,8 +71,8 @@ const AssessmentTemplates = () => {
       <div className="app-page">
         <div className="page-header flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1>Assessment Templates</h1>
-            <p>Create MCQ templates question-by-question. Template ID is later used to host exams directly.</p>
+             <h1>Question Bank</h1>
+             <p>Create MCQ templates question-by-question. Template ID is later used to host exams directly.</p>
           </div>
           <Button onClick={() => navigate('/teacher/assessments/templates/new/builder')}>
             <FiPlus className="h-4 w-4" />
@@ -100,7 +119,7 @@ const AssessmentTemplates = () => {
                           <div className="flex justify-end gap-2">
                             <Button
                               variant="secondary"
-                              className="!h-9 !px-3 !border-blue-200 !bg-blue-50 !text-blue-700 hover:!bg-blue-100"
+                              className="h-9! px-3! border-blue-200! bg-blue-50! text-blue-700! hover:bg-blue-100!"
                               onClick={() => setPreviewTemplate(template)}
                             >
                               <FiEye className="h-4 w-4" />
@@ -108,11 +127,21 @@ const AssessmentTemplates = () => {
                             </Button>
                             <Button
                               variant="secondary"
-                              className="!h-9 !px-3 !border-emerald-200 !bg-emerald-50 !text-emerald-700 hover:!bg-emerald-100"
+                              className="h-9! px-3! border-emerald-200! bg-emerald-50! text-emerald-700! hover:bg-emerald-100!"
                               onClick={() => navigate(`/teacher/assessments/templates/${template.id}/builder`)}
                             >
                               <FiEdit2 className="h-4 w-4" />
                               Open Builder
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              className="h-9! w-9! p-0! border-red-200! bg-red-50! text-red-700! hover:bg-red-100!"
+                              onClick={() => handleDeleteTemplate(template)}
+                              disabled={deletingTemplateId === template.id}
+                              aria-label={deletingTemplateId === template.id ? 'Deleting template' : 'Delete template'}
+                              title={deletingTemplateId === template.id ? 'Deleting template' : 'Delete template'}
+                            >
+                              <FiTrash2 className="h-4 w-4" />
                             </Button>
                           </div>
                         </td>

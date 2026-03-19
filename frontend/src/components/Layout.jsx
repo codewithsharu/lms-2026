@@ -36,8 +36,8 @@ const Layout = ({ children }) => {
         { name: 'Dashboard', path: '/teacher', icon: FiHome },
         { name: 'My Students', path: '/teacher/students', icon: FiUsers },
         { name: 'My Classes', path: '/teacher/classes', icon: FiBook },
-        { name: 'Templates', path: '/teacher/assessments/templates', icon: FiClipboard },
-        { name: 'Host Exams', path: '/teacher/assessments/host', icon: FiActivity },
+        { name: 'Question Bank', path: '/teacher/assessments/templates', icon: FiClipboard },
+        { name: 'Schedule Exams', path: '/teacher/assessments/host', icon: FiActivity },
         { name: 'Analytics', path: '/teacher/analytics', icon: FiBarChart2 },
       ],
       student: [

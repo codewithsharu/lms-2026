@@ -12,6 +12,7 @@ const DEFAULT_REQUIRED_TABLES = [
   'audit_logs',
   'assessment_templates',
   'hosted_assessments',
+  'hosted_assessment_student_targets',
   'assessment_attempts'
 ];
 

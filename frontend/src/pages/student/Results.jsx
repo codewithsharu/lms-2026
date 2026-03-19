@@ -6,6 +6,54 @@ import Card from '../../components/ui/Card';
 import StatCard from '../../components/ui/StatCard';
 import { assessmentAPI } from '../../services/api';
 
+const formatScoreLine = (attempt) => {
+  if (!attempt) return '';
+
+  const score = Number(attempt.score ?? 0);
+  const total = Number(attempt.total_marks ?? 0);
+  const percentage = Number(attempt.percentage ?? 0);
+
+  return `${score} / ${total}${Number.isFinite(percentage) ? ` (${percentage}%)` : ''}`;
+};
+
+const formatDateTime = (value) => {
+  if (!value) return 'Not set';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Invalid date';
+  return parsed.toLocaleString();
+};
+
+const formatShortDate = (value) => {
+  if (!value) return 'N/A';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'N/A';
+  return parsed.toLocaleString();
+};
+
+const getVisibilityDetails = (item) => {
+  if (item.resultVisible) {
+    return {
+      label: 'Visible',
+      className: 'success',
+      helper: 'Scores are released.'
+    };
+  }
+
+  if (item.result_mode === 'manual') {
+    return {
+      label: 'Pending Manual Release',
+      className: 'info',
+      helper: 'Teacher will publish results.'
+    };
+  }
+
+  return {
+    label: 'Pending Until End',
+    className: 'warning',
+    helper: item.end_time ? `Opens after ${formatDateTime(item.end_time)}` : 'Opens after the exam window closes.'
+  };
+};
+
 const StudentResults = () => {
   const [loading, setLoading] = useState(true);
   const [results, setResults] = useState([]);
@@ -81,10 +129,7 @@ const StudentResults = () => {
                   </thead>
                   <tbody>
                     {results.map((item) => {
-                      const visibility = {
-                        label: item.resultVisible ? 'Visible' : (item.result_mode === 'manual' ? 'Manual Release' : 'Pending Until End'),
-                        className: item.resultVisible ? 'success' : (item.result_mode === 'manual' ? 'info' : 'warning')
-                      };
+                      const visibility = getVisibilityDetails(item);
 
                       return (
                         <tr key={item.examId}>
@@ -98,12 +143,18 @@ const StudentResults = () => {
                           <td className="capitalize">{String(item.result_mode || 'N/A').replace('_', ' ')}</td>
                           <td>
                             <span className={`status-badge ${visibility.className}`}>{visibility.label}</span>
+                            {visibility.helper && <p className="text-xs text-slate-500 mt-1">{visibility.helper}</p>}
                           </td>
                           <td>
                             {item.latestAttempt ? (
                               item.resultVisible
-                                ? <span className="text-sm font-medium text-slate-700">{item.latestAttempt.score ?? 0} / {item.latestAttempt.total_marks ?? 0}</span>
-                                : <span className="text-sm text-slate-500">Hidden</span>
+                                ? (
+                                  <div>
+                                    <span className="text-sm font-medium text-slate-700">{formatScoreLine(item.latestAttempt)}</span>
+                                    <p className="text-xs text-slate-500 mt-1">Attempt #{item.latestAttempt.attempt_number || 1} • {formatShortDate(item.latestAttempt.submitted_at)}</p>
+                                  </div>
+                                )
+                                : <span className="text-sm text-slate-500">Hidden until release</span>
                             ) : (
                               <span className="text-sm text-slate-400">Not attempted</span>
                             )}
@@ -111,8 +162,13 @@ const StudentResults = () => {
                           <td>
                             {item.bestAttempt ? (
                               item.resultVisible
-                                ? <span className="text-sm font-medium text-slate-700">{item.bestAttempt.score ?? 0} / {item.bestAttempt.total_marks ?? 0}</span>
-                                : <span className="text-sm text-slate-500">Hidden</span>
+                                ? (
+                                  <div>
+                                    <span className="text-sm font-medium text-slate-700">{formatScoreLine(item.bestAttempt)}</span>
+                                    <p className="text-xs text-slate-500 mt-1">Best of {item.attemptsUsed || 0} attempt(s)</p>
+                                  </div>
+                                )
+                                : <span className="text-sm text-slate-500">Hidden until release</span>
                             ) : (
                               <span className="text-sm text-slate-400">-</span>
                             )}
