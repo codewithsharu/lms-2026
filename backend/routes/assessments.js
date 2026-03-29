@@ -41,6 +41,28 @@ const safeNumber = (value, fallback) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const resolvePublishStatusByWindow = (requestedStatus, parsedEndTime) => {
+  if (requestedStatus !== 'published') return requestedStatus;
+
+  if (!parsedEndTime || Number.isNaN(parsedEndTime.getTime())) {
+    return requestedStatus;
+  }
+
+  return parsedEndTime <= new Date() ? 'closed' : requestedStatus;
+};
+
+const parseBooleanInput = (value, fallback = false) => {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1') return true;
+    if (normalized === 'false' || normalized === '0') return false;
+  }
+  return fallback;
+};
+
 const normalizeSessionTokenValue = (value) => {
   if (Array.isArray(value)) {
     return value.find((entry) => typeof entry === 'string' && entry.trim()) || '';
@@ -578,6 +600,7 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
       class_id,
       section_id,
       zone,
+      allow_resume,
       duration_minutes,
       max_attempts,
       result_mode,
@@ -609,6 +632,7 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
 
     const parsedDuration = safeInt(duration_minutes, 0);
     const parsedAttempts = safeInt(max_attempts, 0);
+    const parsedAllowResume = parseBooleanInput(allow_resume, true);
 
     if (parsedDuration <= 0) {
       return res.status(400).json({ error: 'Duration must be greater than 0 minutes' });
@@ -645,9 +669,12 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
       return res.status(400).json({ error: 'Start and end time are required to publish an exam' });
     }
 
+    const finalPublishStatus = resolvePublishStatusByWindow(String(publish_status), parsedEndTime);
+    const autoClosedOnCreate = publish_status === 'published' && finalPublishStatus === 'closed';
+
     const { data: template, error: templateError } = await supabase
       .from('assessment_templates')
-      .select('id, teacher_id')
+      .select('id, teacher_id, question_count, template_data')
       .eq('id', template_id)
       .eq('teacher_id', req.user.id)
       .single();
@@ -663,16 +690,24 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
       return res.status(404).json({ error: 'Template not found for this teacher' });
     }
 
+    const validTemplateQuestions = normalizeQuestionList(template.template_data);
+    if (validTemplateQuestions.length === 0 || safeInt(template.question_count, 0) <= 0) {
+      return res.status(400).json({
+        error: 'Cannot schedule exam because the selected template has zero valid questions'
+      });
+    }
+
     const payload = {
       template_id,
       host_id: req.user.id,
       class_id: class_id || null,
       section_id: section_id || null,
       zone: zone || null,
+      allow_resume: parsedAllowResume,
       duration_minutes: parsedDuration,
       max_attempts: parsedAttempts,
       result_mode,
-      publish_status,
+      publish_status: finalPublishStatus,
       start_time: parsedStartTime ? parsedStartTime.toISOString() : null,
       end_time: parsedEndTime ? parsedEndTime.toISOString() : null,
       instructions: instructions ? String(instructions).trim() : null
@@ -714,7 +749,9 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
     }
 
     res.status(201).json({
-      message: 'Exam hosted successfully',
+      message: autoClosedOnCreate
+        ? 'Exam window is already over, so status was saved as Closed'
+        : 'Exam hosted successfully',
       hostedExam: {
         ...data,
         specific_students: specificStudents
@@ -796,6 +833,7 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
       class_id,
       section_id,
       zone,
+      allow_resume,
       duration_minutes,
       max_attempts,
       result_mode,
@@ -812,6 +850,9 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
     const resolvedAttempts = max_attempts !== undefined
       ? safeInt(max_attempts, 0)
       : safeInt(existingHostedExam.max_attempts, 0);
+    const resolvedAllowResume = allow_resume !== undefined
+      ? parseBooleanInput(allow_resume, true)
+      : existingHostedExam.allow_resume !== false;
     const resolvedResultMode = result_mode !== undefined
       ? String(result_mode)
       : existingHostedExam.result_mode;
@@ -861,6 +902,34 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
       return res.status(400).json({ error: 'Start and end time are required to publish an exam' });
     }
 
+    const finalPublishStatus = resolvePublishStatusByWindow(resolvedPublishStatus, parsedEndTime);
+    const autoClosedOnUpdate = resolvedPublishStatus === 'published' && finalPublishStatus === 'closed';
+
+    const { data: linkedTemplate, error: linkedTemplateError } = await supabase
+      .from('assessment_templates')
+      .select('id, teacher_id, question_count, template_data')
+      .eq('id', existingHostedExam.template_id)
+      .eq('teacher_id', req.user.id)
+      .single();
+
+    if (linkedTemplateError && isMissingAssessmentTableError(linkedTemplateError)) {
+      return res.status(503).json({
+        error: 'Assessment module is not initialized yet. Please run migration when DB access is available.',
+        setupRequired: true
+      });
+    }
+
+    if (linkedTemplateError || !linkedTemplate) {
+      return res.status(404).json({ error: 'Linked template not found for this hosted exam' });
+    }
+
+    const validLinkedTemplateQuestions = normalizeQuestionList(linkedTemplate.template_data);
+    if (validLinkedTemplateQuestions.length === 0 || safeInt(linkedTemplate.question_count, 0) <= 0) {
+      return res.status(400).json({
+        error: 'Cannot save hosted exam because its template has zero valid questions'
+      });
+    }
+
     let normalizedStudentIds = null;
 
     if (assigned_student_ids !== undefined) {
@@ -886,10 +955,11 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
       class_id: class_id !== undefined ? (class_id || null) : existingHostedExam.class_id,
       section_id: section_id !== undefined ? (section_id || null) : existingHostedExam.section_id,
       zone: zone !== undefined ? (zone || null) : existingHostedExam.zone,
+      allow_resume: resolvedAllowResume,
       duration_minutes: resolvedDuration,
       max_attempts: resolvedAttempts,
       result_mode: resolvedResultMode,
-      publish_status: resolvedPublishStatus,
+      publish_status: finalPublishStatus,
       start_time: parsedStartTime ? parsedStartTime.toISOString() : null,
       end_time: parsedEndTime ? parsedEndTime.toISOString() : null,
       instructions: instructions !== undefined
@@ -937,7 +1007,9 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
     }
 
     res.json({
-      message: 'Hosted exam updated successfully',
+      message: autoClosedOnUpdate
+        ? 'Exam window is already over, so status was saved as Closed'
+        : 'Hosted exam updated successfully',
       hostedExam: {
         ...updatedHostedExam,
         specific_students: specificStudents
@@ -1051,6 +1123,7 @@ router.get('/student/available', verifyToken, hasRole('student'), async (req, re
         id,
         duration_minutes,
         max_attempts,
+        allow_resume,
         result_mode,
         publish_status,
         start_time,
@@ -1113,7 +1186,8 @@ router.get('/student/available', verifyToken, hasRole('student'), async (req, re
         hasInProgressAttempt: Boolean(inProgressAttempt),
         inProgressAttemptId: inProgressAttempt?.id || null,
         latestSubmittedAttempt: submittedAttempts[0] || null,
-        canAttempt: inProgressAttempt ? true : attemptsUsed < maxAttempts
+        canResume: inProgressAttempt ? exam.allow_resume !== false : false,
+        canAttempt: inProgressAttempt ? (exam.allow_resume !== false) : attemptsUsed < maxAttempts
       };
     });
 
@@ -1141,6 +1215,7 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
         class_id,
         section_id,
         zone,
+        allow_resume,
         duration_minutes,
         max_attempts,
         result_mode,
@@ -1198,6 +1273,12 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
 
     let activeAttempt = existingInProgress || null;
 
+    if (activeAttempt && hostedExam.allow_resume === false) {
+      return res.status(400).json({
+        error: 'Resume is disabled for this assessment by your teacher'
+      });
+    }
+
     if (!activeAttempt) {
       const { count: attemptCount, error: countError } = await supabase
         .from('assessment_attempts')
@@ -1252,6 +1333,7 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
         title: hostedExam.template?.title || 'Assessment',
         subject: hostedExam.template?.subject || 'N/A',
         instructions: hostedExam.instructions || '',
+        allow_resume: hostedExam.allow_resume !== false,
         result_mode: hostedExam.result_mode,
         start_time: hostedExam.start_time,
         end_time: hostedExam.end_time,
@@ -1290,6 +1372,7 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
           class_id,
           section_id,
           zone,
+          allow_resume,
           duration_minutes,
           max_attempts,
           result_mode,
@@ -1349,6 +1432,7 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
         title: resolvedAttempt.hosted?.template?.title || 'Assessment',
         subject: resolvedAttempt.hosted?.template?.subject || 'N/A',
         instructions: resolvedAttempt.hosted?.instructions || '',
+        allow_resume: resolvedAttempt.hosted?.allow_resume !== false,
         result_mode: resolvedAttempt.hosted?.result_mode,
         start_time: resolvedAttempt.hosted?.start_time,
         end_time: resolvedAttempt.hosted?.end_time,

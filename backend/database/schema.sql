@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS hosted_assessments (
   class_id UUID REFERENCES classes(id) ON DELETE SET NULL,
   section_id UUID REFERENCES sections(id) ON DELETE SET NULL,
   zone VARCHAR(10) CHECK (zone IN ('blue', 'red', 'green')),
+  allow_resume BOOLEAN NOT NULL DEFAULT true,
   duration_minutes INTEGER NOT NULL,
   max_attempts INTEGER DEFAULT 1,
   result_mode VARCHAR(20) NOT NULL CHECK (result_mode IN ('immediate', 'manual', 'after_end')),
@@ -140,6 +141,11 @@ CREATE TABLE IF NOT EXISTS hosted_assessments (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+ALTER TABLE hosted_assessments ADD COLUMN IF NOT EXISTS allow_resume BOOLEAN;
+ALTER TABLE hosted_assessments ALTER COLUMN allow_resume SET DEFAULT true;
+UPDATE hosted_assessments SET allow_resume = true WHERE allow_resume IS NULL;
+ALTER TABLE hosted_assessments ALTER COLUMN allow_resume SET NOT NULL;
 
 -- Hosted exam specific student targets (optional per-exam student whitelist)
 CREATE TABLE IF NOT EXISTS hosted_assessment_student_targets (

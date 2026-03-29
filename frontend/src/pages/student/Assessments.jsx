@@ -229,6 +229,8 @@ const StudentAssessments = () => {
                               <span className="status-badge info">Starts soon</span>
                             ) : status === 'ended' ? (
                               <span className="status-badge warning">Window closed</span>
+                            ) : exam.hasInProgressAttempt && exam.allow_resume === false ? (
+                              <span className="status-badge warning">Resume disabled</span>
                             ) : exam.hasInProgressAttempt && exam.inProgressAttemptId ? (
                               <Button
                                 variant="secondary"

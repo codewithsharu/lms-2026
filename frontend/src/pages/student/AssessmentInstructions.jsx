@@ -84,7 +84,10 @@ const AssessmentInstructions = () => {
       }
 
       navigate(`/student/assessments/attempt/${attemptId}`, {
-        state: { shouldEnterFullscreen: true }
+        state: {
+          shouldEnterFullscreen: true,
+          attemptBootstrap: response.data
+        }
       });
     } catch (error) {
       if (error.response?.status === 409 && error.response?.data?.sessionConflict && error.response?.data?.attemptId) {
@@ -137,7 +140,7 @@ const AssessmentInstructions = () => {
         </div>
 
         <Card>
-          <Card.Body className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <Card.Body className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
             <div className="surface-card-muted p-3">
               <p className="text-xs uppercase tracking-wide text-gray-500">Assessment</p>
               <p className="mt-1 font-medium text-gray-800">{exam.template?.title || 'Untitled'}</p>
@@ -153,6 +156,10 @@ const AssessmentInstructions = () => {
             <div className="surface-card-muted p-3">
               <p className="text-xs uppercase tracking-wide text-gray-500">Attempts</p>
               <p className="mt-1 font-medium text-gray-800">{Math.max(0, exam.remainingAttempts || 0)} remaining</p>
+            </div>
+            <div className="surface-card-muted p-3">
+              <p className="text-xs uppercase tracking-wide text-gray-500">Resume</p>
+              <p className="mt-1 font-medium text-gray-800">{exam.allow_resume === false ? 'Not allowed' : 'Allowed'}</p>
             </div>
           </Card.Body>
         </Card>

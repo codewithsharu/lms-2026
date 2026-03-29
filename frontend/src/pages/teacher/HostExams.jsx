@@ -130,6 +130,7 @@ const HostExams = () => {
     section_id: '',
     zone: '',
     specific_student_id: '',
+    allow_resume: true,
     publish_status: 'draft',
     start_time: '',
     end_time: '',
@@ -213,6 +214,7 @@ const HostExams = () => {
       section_id: exam.section_id || '',
       zone: exam.zone || '',
       specific_student_id: exam.specific_students?.[0]?.id || '',
+      allow_resume: exam.allow_resume !== false,
       publish_status: exam.publish_status || 'draft',
       start_time: toDateTimeLocal(exam.start_time),
       end_time: toDateTimeLocal(exam.end_time),
@@ -259,10 +261,11 @@ const HostExams = () => {
     try {
       setSaving(true);
 
-      await assessmentAPI.updateHostedExam(selectedExam.id, {
+      const response = await assessmentAPI.updateHostedExam(selectedExam.id, {
         class_id: editFormData.class_id || null,
         section_id: editFormData.section_id || null,
         zone: editFormData.zone || null,
+        allow_resume: editFormData.allow_resume,
         publish_status: editFormData.publish_status,
         start_time: editFormData.start_time || null,
         end_time: editFormData.end_time || null,
@@ -273,7 +276,7 @@ const HostExams = () => {
           : []
       });
 
-      toast.success('Hosted exam updated successfully');
+      toast.success(response.data?.message || 'Hosted exam updated successfully');
       closeEditModal();
       fetchHostedExams();
     } catch (error) {
@@ -336,6 +339,7 @@ const HostExams = () => {
                       <th>Window</th>
                       <th>Duration</th>
                       <th>Attempts</th>
+                      <th>Resume</th>
                       <th>Status</th>
                       <th className="text-right">Action</th>
                     </tr>
@@ -366,6 +370,11 @@ const HostExams = () => {
                           </span>
                         </td>
                         <td>{exam.max_attempts}</td>
+                        <td>
+                          <span className={`status-badge ${exam.allow_resume === false ? 'warning' : 'success'}`}>
+                            {exam.allow_resume === false ? 'No' : 'Yes'}
+                          </span>
+                        </td>
                         <td>
                           <span className={`status-badge ${getStatusClass(exam.publish_status)}`}>
                             {exam.publish_status}
@@ -457,6 +466,18 @@ const HostExams = () => {
               value={editFormData.duration_minutes}
               onChange={(event) => setEditFormData((prev) => ({ ...prev, duration_minutes: event.target.value }))}
             />
+
+            <SelectField
+              label="Allow Resume"
+              value={editFormData.allow_resume ? 'true' : 'false'}
+              onChange={(event) => setEditFormData((prev) => ({
+                ...prev,
+                allow_resume: event.target.value === 'true'
+              }))}
+            >
+              <option value="true">Allow resume after exit</option>
+              <option value="false">Do not allow resume after exit</option>
+            </SelectField>
 
             <SelectField
               label="Class"

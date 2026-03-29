@@ -66,6 +66,7 @@ const AssessmentAttempt = () => {
   const hasAutoSubmittedRef = useRef(false);
   const sessionTokenRef = useRef(getExamSessionToken());
   const skipNextAutosaveRef = useRef(true);
+  const hasBootstrapAttemptRef = useRef(false);
 
   const buildAutosavePayload = (questionList, currentAnswers, currentSaved, currentMarked) => {
     const payload = {};
@@ -81,61 +82,75 @@ const AssessmentAttempt = () => {
     return payload;
   };
 
-  const loadAttempt = async ({ forceTakeover = false } = {}) => {
+  const hydrateAttemptState = (payload) => {
+    const attempt = payload?.attempt;
+    const hostedAssessment = payload?.hostedAssessment;
+    const questionList = Array.isArray(payload?.questions) ? payload.questions : [];
+
+    if (!attempt || !hostedAssessment || questionList.length === 0) {
+      return false;
+    }
+
+    setAttemptData({ attempt, hostedAssessment });
+    setQuestions(questionList);
+
+    const initialAnswers = {};
+    const initialSaved = {};
+    const persistedSaved = attempt.answers?.__uiSavedResponses;
+    const persistedMarked = attempt.answers?.__uiMarkedForReview;
+
+    questionList.forEach((question) => {
+      const key = String(question.index);
+      const normalized = normalizeAnswerForQuestion(question, attempt.answers?.[key]);
+      initialAnswers[key] = normalized;
+      initialSaved[key] = typeof persistedSaved?.[key] === 'boolean'
+        ? persistedSaved[key]
+        : hasAnswerValue(question, normalized);
+    });
+
+    setAnswers(initialAnswers);
+    setSavedResponses(initialSaved);
+    setMarkedForReview(
+      persistedMarked && typeof persistedMarked === 'object'
+        ? persistedMarked
+        : {}
+    );
+    setTimeLeft(Number(attempt.remaining_seconds || 0));
+    skipNextAutosaveRef.current = true;
+
+    if (attempt.status === 'submitted' || attempt.status === 'auto_submitted') {
+      setSubmittedSummary({
+        status: attempt.status,
+        score: attempt.score,
+        total_marks: attempt.total_marks,
+        percentage: attempt.percentage,
+        correct_count: attempt.correct_count,
+        total_questions: attempt.total_questions,
+        resultVisible: true,
+        resultMode: hostedAssessment.result_mode
+      });
+    }
+
+    return true;
+  };
+
+  const loadAttempt = async ({ forceTakeover = false, silent = false } = {}) => {
     try {
-      setLoading(true);
+      if (!silent) {
+        setLoading(true);
+      }
       setSessionConflict(null);
       const response = await assessmentAPI.getStudentAttempt(attemptId, {
         sessionToken: sessionTokenRef.current,
         forceTakeover
       });
-      const attempt = response.data?.attempt;
-      const hostedAssessment = response.data?.hostedAssessment;
-      const questionList = response.data?.questions || [];
 
-      if (!attempt || !hostedAssessment) {
+      if (!hydrateAttemptState(response.data)) {
         toast.error('Attempt data not available');
-        navigate('/student/assessments');
+        if (!hasBootstrapAttemptRef.current) {
+          navigate('/student/assessments');
+        }
         return;
-      }
-
-      setAttemptData({ attempt, hostedAssessment });
-      setQuestions(questionList);
-
-      const initialAnswers = {};
-      const initialSaved = {};
-      const persistedSaved = attempt.answers?.__uiSavedResponses;
-      const persistedMarked = attempt.answers?.__uiMarkedForReview;
-      questionList.forEach((question) => {
-        const key = String(question.index);
-        const normalized = normalizeAnswerForQuestion(question, attempt.answers?.[key]);
-        initialAnswers[key] = normalized;
-        initialSaved[key] = typeof persistedSaved?.[key] === 'boolean'
-          ? persistedSaved[key]
-          : hasAnswerValue(question, normalized);
-      });
-
-      setAnswers(initialAnswers);
-      setSavedResponses(initialSaved);
-      setMarkedForReview(
-        persistedMarked && typeof persistedMarked === 'object'
-          ? persistedMarked
-          : {}
-      );
-      setTimeLeft(Number(attempt.remaining_seconds || 0));
-      skipNextAutosaveRef.current = true;
-
-      if (attempt.status === 'submitted' || attempt.status === 'auto_submitted') {
-        setSubmittedSummary({
-          status: attempt.status,
-          score: attempt.score,
-          total_marks: attempt.total_marks,
-          percentage: attempt.percentage,
-          correct_count: attempt.correct_count,
-          total_questions: attempt.total_questions,
-          resultVisible: true,
-          resultMode: hostedAssessment.result_mode
-        });
       }
     } catch (error) {
       if (error.response?.status === 409 && error.response?.data?.sessionConflict) {
@@ -147,14 +162,32 @@ const AssessmentAttempt = () => {
         return;
       }
 
-      toast.error(error.response?.data?.error || 'Failed to load attempt');
-      navigate('/student/assessments');
+      const fallbackMessage = error.response?.data?.error || 'Failed to load attempt';
+
+      if (!hasBootstrapAttemptRef.current) {
+        toast.error(fallbackMessage);
+        navigate('/student/assessments');
+      } else {
+        console.error('Attempt refresh failed, using bootstrap payload:', fallbackMessage);
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
+    const bootstrapPayload = location.state?.attemptBootstrap;
+
+    if (hydrateAttemptState(bootstrapPayload)) {
+      hasBootstrapAttemptRef.current = true;
+      setLoading(false);
+      loadAttempt({ silent: true });
+      return;
+    }
+
+    hasBootstrapAttemptRef.current = false;
     loadAttempt();
   }, [attemptId]);
 
@@ -253,7 +286,7 @@ const AssessmentAttempt = () => {
 
         console.error('Autosave failed:', error);
       }
-    }, 900);
+    }, 350);
 
     return () => clearTimeout(timer);
   }, [answers, savedResponses, markedForReview, attemptData, submittedSummary, questions, attemptId]);
@@ -273,7 +306,7 @@ const AssessmentAttempt = () => {
   const setSingleChoice = (questionIndex, optionIndex) => {
     const key = String(questionIndex);
     setAnswers((prev) => ({ ...prev, [key]: optionIndex }));
-    setSavedResponses((prev) => ({ ...prev, [key]: false }));
+    setSavedResponses((prev) => ({ ...prev, [key]: true }));
   };
 
   const toggleMultipleChoice = (questionIndex, optionIndex) => {
@@ -286,19 +319,20 @@ const AssessmentAttempt = () => {
       if (selected.has(optionIndex)) selected.delete(optionIndex);
       else selected.add(optionIndex);
 
+      const nextSelection = Array.from(selected).sort((a, b) => a - b);
+      setSavedResponses((savedPrev) => ({ ...savedPrev, [key]: nextSelection.length > 0 }));
+
       return {
         ...prev,
-        [key]: Array.from(selected).sort((a, b) => a - b)
+        [key]: nextSelection
       };
     });
-
-    setSavedResponses((prev) => ({ ...prev, [key]: false }));
   };
 
   const setBlankAnswer = (questionIndex, value) => {
     const key = String(questionIndex);
     setAnswers((prev) => ({ ...prev, [key]: value }));
-    setSavedResponses((prev) => ({ ...prev, [key]: false }));
+    setSavedResponses((prev) => ({ ...prev, [key]: String(value || '').trim().length > 0 }));
   };
 
   const handleSubmit = async (forceAutoSubmit = false) => {
@@ -391,7 +425,7 @@ const AssessmentAttempt = () => {
     if (currentIndex < questions.length - 1) {
       setCurrentIndex((prev) => Math.min(questions.length - 1, prev + 1));
     } else {
-      toast.success('Answer saved for current question');
+      toast.success(hasValue ? 'Answer saved for current question' : 'No answer selected for current question');
     }
   };
 
@@ -513,7 +547,7 @@ const AssessmentAttempt = () => {
         )}
 
         <div className="grid min-h-[calc(100vh-190px)] grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <Card className="order-2 flex h-full min-h-[420px] flex-col lg:order-2">
+          <Card className="order-2 flex h-full min-h-105 flex-col lg:order-2">
             <Card.Header>
               <div className="flex items-center justify-between">
                 <h2 className="section-title text-base">Questions</h2>
@@ -552,7 +586,7 @@ const AssessmentAttempt = () => {
             </Card.Body>
           </Card>
 
-          <Card className="order-1 flex h-full min-h-[420px] flex-col lg:order-1">
+          <Card className="order-1 flex h-full min-h-105 flex-col lg:order-1">
             <Card.Header>
               <div className="flex items-center justify-between gap-3">
                 <h2 className="section-title text-base">Question {currentIndex + 1} of {questions.length}</h2>
@@ -579,7 +613,7 @@ const AssessmentAttempt = () => {
                         const value = answers[key];
                         const selected = currentQuestion.answerMode === 'multiple'
                           ? (Array.isArray(value) && value.includes(optionIndex))
-                          : Number(value) === optionIndex;
+                          : (Number.isInteger(value) && value === optionIndex);
 
                         return (
                           <button
@@ -648,10 +682,10 @@ const AssessmentAttempt = () => {
               <Button
                 variant="success"
                 onClick={saveAndNext}
-                disabled={currentIndex >= questions.length - 1}
+                disabled={!currentQuestion}
                 className="px-5"
               >
-                Save & Next
+                {currentIndex >= questions.length - 1 ? 'Save' : 'Save & Next'}
               </Button>
             </div>
           </div>
@@ -748,7 +782,7 @@ const AssessmentAttempt = () => {
         </Modal>
 
         {showFullscreenLock && !submittedSummary && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/70 p-4">
+          <div className="fixed inset-0 z-70 flex items-center justify-center bg-slate-950/70 p-4">
             <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
               <div className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-full bg-amber-100 text-amber-700">
                 <FiLock className="h-5 w-5" />
