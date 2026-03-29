@@ -1,12 +1,18 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const supabase = require('../config/supabase');
 const { verifyToken, isAdmin } = require('../middleware/auth');
 const { logAction } = require('../middleware/audit');
+const {
+  createAuthUser,
+  updateAuthUser,
+  deleteAuthUser,
+  findAuthUserByEmail
+} = require('../services/supabaseAuthService');
 
 const router = express.Router();
+const LEGACY_PASSWORD_PLACEHOLDER = '__SUPABASE_AUTH__';
 
 // Configure multer for Excel file uploads
 const storage = multer.memoryStorage();
@@ -48,6 +54,64 @@ const getPasswordFromEmailPrefix = (email) => {
   const localPart = normalizedEmail.slice(0, atIndex).trim();
   return localPart || null;
 };
+
+const getProvisioningFallbackPassword = (email) => getPasswordFromEmailPrefix(email) || generatePassword();
+const isMissingAuthUserIdColumnError = (error) => String(error?.message || '').toLowerCase().includes('auth_user_id');
+
+const insertUserWithOptionalAuthLink = async (payload, selectClause = '*') => {
+  const { auth_user_id: _authUserId, ...fallbackPayload } = payload;
+
+  const withAuth = await supabase
+    .from('users')
+    .insert(payload)
+    .select(selectClause)
+    .single();
+
+  if (!withAuth.error || !isMissingAuthUserIdColumnError(withAuth.error)) {
+    return withAuth;
+  }
+
+  return supabase
+    .from('users')
+    .insert(fallbackPayload)
+    .select(selectClause)
+    .single();
+};
+
+const syncAuthUserIdOnAppUser = async (appUserId, authUserId) => {
+  if (!appUserId || !authUserId) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from('users')
+    .update({ auth_user_id: authUserId })
+    .eq('id', appUserId);
+
+  if (error && !isMissingAuthUserIdColumnError(error)) {
+    throw error;
+  }
+};
+
+const resolveAuthUserId = async ({ authUserId, email, appUserId = null }) => {
+  if (authUserId) {
+    return authUserId;
+  }
+
+  const authUser = await findAuthUserByEmail(email);
+
+  if (!authUser?.id) {
+    return null;
+  }
+
+  if (appUserId) {
+    await syncAuthUserIdOnAppUser(appUserId, authUser.id);
+  }
+
+  return authUser.id;
+};
+
+const isAuthAdminMissingError = (error) => error?.code === 'SUPABASE_ADMIN_REQUIRED';
 
 const getClassById = async (classId) => {
   const { data: classData, error } = await supabase
@@ -406,25 +470,61 @@ router.post('/', verifyToken, isAdmin, async (req, res) => {
 
     // Password is always derived from email local part (before @)
     const userPassword = derivedPassword;
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(userPassword, salt);
+
+    let authProvisionResult;
+
+    try {
+      authProvisionResult = await createAuthUser({
+        email: normalizedEmail,
+        password: userPassword,
+        role,
+        fullName: full_name,
+        isActive: true
+      });
+    } catch (authError) {
+      if (isAuthAdminMissingError(authError)) {
+        return res.status(500).json({ error: authError.message });
+      }
+
+      throw authError;
+    }
+
+    if (!authProvisionResult?.user?.id) {
+      return res.status(500).json({ error: 'Failed to provision auth account for user.' });
+    }
+
+    if (!authProvisionResult.created) {
+      await updateAuthUser(authProvisionResult.user.id, {
+        password: userPassword,
+        role,
+        fullName: full_name,
+        isActive: true
+      });
+    }
 
     // Create user
-    const { data: newUser, error: userError } = await supabase
-      .from('users')
-      .insert({
-        email: normalizedEmail,
-        password_hash: passwordHash,
-        full_name,
-        phone: sanitizedPhone,
-        profile_photo: profile_photo || null,
-        role,
-        created_by: req.user.id
-      })
-      .select()
-      .single();
+    const { data: newUser, error: userError } = await insertUserWithOptionalAuthLink({
+      email: normalizedEmail,
+      password_hash: LEGACY_PASSWORD_PLACEHOLDER,
+      auth_user_id: authProvisionResult.user.id,
+      full_name,
+      phone: sanitizedPhone,
+      profile_photo: profile_photo || null,
+      role,
+      created_by: req.user.id
+    });
 
-    if (userError) throw userError;
+    if (userError) {
+      if (authProvisionResult.created) {
+        try {
+          await deleteAuthUser(authProvisionResult.user.id);
+        } catch {
+          // Best effort rollback for provisioned auth account.
+        }
+      }
+
+      throw userError;
+    }
 
     // Create role-specific details
     if (role === 'student') {
@@ -441,6 +541,15 @@ router.post('/', verifyToken, isAdmin, async (req, res) => {
       if (studentError) {
         // Rollback user creation
         await supabase.from('users').delete().eq('id', newUser.id);
+
+        if (authProvisionResult.created) {
+          try {
+            await deleteAuthUser(authProvisionResult.user.id);
+          } catch {
+            // Best effort rollback for provisioned auth account.
+          }
+        }
+
         throw studentError;
       }
     } else if (role === 'teacher') {
@@ -455,6 +564,15 @@ router.post('/', verifyToken, isAdmin, async (req, res) => {
       if (teacherError) {
         // Rollback user creation
         await supabase.from('users').delete().eq('id', newUser.id);
+
+        if (authProvisionResult.created) {
+          try {
+            await deleteAuthUser(authProvisionResult.user.id);
+          } catch {
+            // Best effort rollback for provisioned auth account.
+          }
+        }
+
         throw teacherError;
       }
     }
@@ -520,6 +638,8 @@ router.put('/:id', verifyToken, isAdmin, async (req, res) => {
 
     // Update user basic info
     const updateData = {};
+    let requestedNewPassword = null;
+
     if (email !== undefined) {
       const normalizedEmail = String(email).trim().toLowerCase();
       if (!normalizedEmail || !getPasswordFromEmailPrefix(normalizedEmail)) {
@@ -542,8 +662,56 @@ router.put('/:id', verifyToken, isAdmin, async (req, res) => {
       if (passwordValue.length < 6) {
         return res.status(400).json({ error: 'New password must be at least 6 characters' });
       }
-      const salt = await bcrypt.genSalt(10);
-      updateData.password_hash = await bcrypt.hash(passwordValue, salt);
+      requestedNewPassword = passwordValue;
+    }
+
+    const effectiveEmail = updateData.email || currentUser.email;
+    const effectiveFullName = updateData.full_name || currentUser.full_name;
+    const effectiveIsActive = is_active !== undefined ? is_active : currentUser.is_active;
+
+    let resolvedAuthUserId = null;
+
+    try {
+      resolvedAuthUserId = await resolveAuthUserId({
+        authUserId: currentUser.auth_user_id,
+        email: currentUser.email,
+        appUserId: currentUser.id
+      });
+
+      if (!resolvedAuthUserId) {
+        const bootstrapPassword = requestedNewPassword || getProvisioningFallbackPassword(effectiveEmail);
+        const provisionResult = await createAuthUser({
+          email: effectiveEmail,
+          password: bootstrapPassword,
+          role: currentUser.role,
+          fullName: effectiveFullName,
+          isActive: effectiveIsActive
+        });
+
+        resolvedAuthUserId = provisionResult?.user?.id || null;
+
+        if (!resolvedAuthUserId) {
+          return res.status(500).json({ error: 'Unable to provision auth account for user update.' });
+        }
+
+        await syncAuthUserIdOnAppUser(currentUser.id, resolvedAuthUserId);
+      }
+
+      const authUpdatePayload = {
+        ...(updateData.email !== undefined ? { email: updateData.email } : {}),
+        ...(requestedNewPassword !== null ? { password: requestedNewPassword } : {}),
+        ...(updateData.full_name !== undefined ? { fullName: updateData.full_name } : {})
+      };
+
+      if (Object.keys(authUpdatePayload).length > 0) {
+        await updateAuthUser(resolvedAuthUserId, authUpdatePayload);
+      }
+    } catch (authError) {
+      if (isAuthAdminMissingError(authError)) {
+        return res.status(500).json({ error: authError.message });
+      }
+
+      throw authError;
     }
 
     if (Object.keys(updateData).length > 0) {
@@ -635,12 +803,9 @@ router.put('/:id', verifyToken, isAdmin, async (req, res) => {
 
     const auditAfter = {
       ...updateData,
+      ...(requestedNewPassword !== null ? { password: '[REDACTED]' } : {}),
       ...(roleSpecificChanges || {})
     };
-
-    if (auditAfter.password_hash) {
-      auditAfter.password_hash = '[REDACTED]';
-    }
 
     await logAction(req, 'UPDATE', 'user', id, { before: currentUser, after: auditAfter });
 
@@ -676,6 +841,24 @@ router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
       return res.status(403).json({ error: 'Cannot delete admin users' });
     }
 
+    try {
+      const authUserId = await resolveAuthUserId({
+        authUserId: currentUser.auth_user_id,
+        email: currentUser.email,
+        appUserId: currentUser.id
+      });
+
+      if (authUserId) {
+        await deleteAuthUser(authUserId);
+      }
+    } catch (authError) {
+      if (isAuthAdminMissingError(authError)) {
+        return res.status(500).json({ error: authError.message });
+      }
+
+      throw authError;
+    }
+
     await cleanupUserDependencies({
       userId: id,
       role: currentUser.role
@@ -708,7 +891,7 @@ router.post('/:id/reset-password', verifyToken, isAdmin, async (req, res) => {
     // Get current user
     const { data: user, error: fetchError } = await supabase
       .from('users')
-      .select('id, email, role')
+      .select('*')
       .eq('id', id)
       .single();
 
@@ -718,15 +901,40 @@ router.post('/:id/reset-password', verifyToken, isAdmin, async (req, res) => {
 
     // Generate or use provided password
     const userPassword = new_password || generatePassword();
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(userPassword, salt);
 
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({ password_hash: passwordHash })
-      .eq('id', id);
+    try {
+      let authUserId = await resolveAuthUserId({
+        authUserId: user.auth_user_id,
+        email: user.email,
+        appUserId: user.id
+      });
 
-    if (updateError) throw updateError;
+      if (!authUserId) {
+        const provisionResult = await createAuthUser({
+          email: user.email,
+          password: userPassword,
+          role: user.role,
+          fullName: user.full_name,
+          isActive: user.is_active
+        });
+
+        authUserId = provisionResult?.user?.id || null;
+
+        if (!authUserId) {
+          return res.status(500).json({ error: 'Unable to provision auth account for password reset.' });
+        }
+
+        await syncAuthUserIdOnAppUser(user.id, authUserId);
+      }
+
+      await updateAuthUser(authUserId, { password: userPassword });
+    } catch (authError) {
+      if (isAuthAdminMissingError(authError)) {
+        return res.status(500).json({ error: authError.message });
+      }
+
+      throw authError;
+    }
 
     await logAction(req, 'UPDATE', 'user', id, { action: 'password_reset' });
 
@@ -870,24 +1078,69 @@ router.post('/bulk-upload', verifyToken, isAdmin, upload.single('file'), async (
 
         // Password is always derived from email local part (before @)
         const userPassword = derivedPassword;
-        const salt = await bcrypt.genSalt(10);
-        const passwordHash = await bcrypt.hash(userPassword, salt);
+        let authProvisionResult;
+
+        try {
+          authProvisionResult = await createAuthUser({
+            email: normalizedEmail,
+            password: userPassword,
+            role,
+            fullName: full_name,
+            isActive: true
+          });
+        } catch (authError) {
+          if (isAuthAdminMissingError(authError)) {
+            results.failed.push({
+              row,
+              error: authError.message
+            });
+            continue;
+          }
+
+          results.failed.push({
+            row,
+            error: authError.message || 'Failed to provision auth account'
+          });
+          continue;
+        }
+
+        if (!authProvisionResult?.user?.id) {
+          results.failed.push({
+            row,
+            error: 'Failed to provision auth account'
+          });
+          continue;
+        }
+
+        if (!authProvisionResult.created) {
+          await updateAuthUser(authProvisionResult.user.id, {
+            password: userPassword,
+            role,
+            fullName: full_name,
+            isActive: true
+          });
+        }
 
         // Create user
-        const { data: newUser, error: userError } = await supabase
-          .from('users')
-          .insert({
-            email: normalizedEmail,
-            password_hash: passwordHash,
-            full_name,
-            phone: phone || null,
-            role,
-            created_by: req.user.id
-          })
-          .select()
-          .single();
+        const { data: newUser, error: userError } = await insertUserWithOptionalAuthLink({
+          email: normalizedEmail,
+          password_hash: LEGACY_PASSWORD_PLACEHOLDER,
+          auth_user_id: authProvisionResult.user.id,
+          full_name,
+          phone: phone || null,
+          role,
+          created_by: req.user.id
+        });
 
         if (userError) {
+          if (authProvisionResult.created) {
+            try {
+              await deleteAuthUser(authProvisionResult.user.id);
+            } catch {
+              // Best effort rollback for provisioned auth account.
+            }
+          }
+
           results.failed.push({
             row,
             error: userError.message
@@ -909,6 +1162,15 @@ router.post('/bulk-upload', verifyToken, isAdmin, upload.single('file'), async (
 
           if (studentError) {
             await supabase.from('users').delete().eq('id', newUser.id);
+
+            if (authProvisionResult.created) {
+              try {
+                await deleteAuthUser(authProvisionResult.user.id);
+              } catch {
+                // Best effort rollback for provisioned auth account.
+              }
+            }
+
             results.failed.push({
               row,
               error: studentError.message
@@ -926,6 +1188,15 @@ router.post('/bulk-upload', verifyToken, isAdmin, upload.single('file'), async (
 
           if (teacherError) {
             await supabase.from('users').delete().eq('id', newUser.id);
+
+            if (authProvisionResult.created) {
+              try {
+                await deleteAuthUser(authProvisionResult.user.id);
+              } catch {
+                // Best effort rollback for provisioned auth account.
+              }
+            }
+
             results.failed.push({
               row,
               error: teacherError.message

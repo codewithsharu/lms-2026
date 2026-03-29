@@ -10,13 +10,22 @@ import {
 const Layout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [logoutLoading, setLogoutLoading] = useState(false);
   const { user, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
-  const handleLogout = () => {
-    logout();
-    navigate('/login');
+  const handleLogout = async () => {
+    if (logoutLoading) return;
+
+    setLogoutLoading(true);
+
+    try {
+      await logout();
+      navigate('/login');
+    } finally {
+      setLogoutLoading(false);
+    }
   };
 
   // Navigation items based on role
@@ -125,7 +134,7 @@ const Layout = ({ children }) => {
         </button>
 
         {/* Logo */}
-        <div className="h-[68px] flex items-center justify-between px-4 border-b border-gray-200 bg-white">
+        <div className="h-17 flex items-center justify-between px-4 border-b border-gray-200 bg-white">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center shadow-sm">
               <FiBook className="w-5 h-5 text-white" />
@@ -200,11 +209,24 @@ const Layout = ({ children }) => {
             </div>
             <button
               onClick={handleLogout}
+              disabled={logoutLoading}
               title="Logout"
-              className={`w-full flex items-center justify-center gap-2 text-red-600 border border-red-200 hover:bg-red-50 rounded-xl transition-colors ${sidebarCollapsed ? 'px-2 py-2' : 'px-4 py-2.5'}`}
+              className={`w-full flex items-center justify-center gap-2 text-red-600 border border-red-200 rounded-xl transition-colors ${logoutLoading ? 'opacity-60' : 'hover:bg-red-50'} ${sidebarCollapsed ? 'px-2 py-2' : 'px-4 py-2.5'}`}
             >
-              <FiLogOut className="w-4 h-4" />
-              {!sidebarCollapsed && <span className="font-medium">Logout</span>}
+              {logoutLoading ? (
+                <>
+                  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  {!sidebarCollapsed && <span className="font-medium">Logging out...</span>}
+                </>
+              ) : (
+                <>
+                  <FiLogOut className="w-4 h-4" />
+                  {!sidebarCollapsed && <span className="font-medium">Logout</span>}
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -234,7 +256,7 @@ const Layout = ({ children }) => {
             </span>
             <div className="hidden md:block text-right">
               <p className="text-xs text-gray-500">Signed in</p>
-              <p className="text-sm font-medium text-gray-800 truncate max-w-[180px]">{user?.full_name}</p>
+              <p className="text-sm font-medium text-gray-800 truncate max-w-45">{user?.full_name}</p>
             </div>
           </div>
         </header>

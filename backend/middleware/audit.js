@@ -22,7 +22,7 @@ const sanitizeRequestBody = (body) => {
     return body;
   }
 
-  const sensitiveFields = ['password', 'password_hash', 'token', 'secret', 'authorization', 'cookie'];
+  const sensitiveFields = ['password', 'password_hash', 'token', 'refresh_token', 'secret', 'authorization', 'cookie'];
   const sanitized = {};
 
   Object.entries(body).forEach(([key, value]) => {

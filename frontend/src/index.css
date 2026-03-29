@@ -41,6 +41,20 @@ html {
   min-height: 100vh;
 }
 
+button,
+[type='button'],
+[type='submit'],
+[type='reset'] {
+  cursor: pointer;
+}
+
+button:disabled,
+[type='button']:disabled,
+[type='submit']:disabled,
+[type='reset']:disabled {
+  cursor: not-allowed;
+}
+
 /* Keep text caret only in real form fields */
 html,
 body,

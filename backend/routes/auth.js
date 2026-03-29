@@ -1,37 +1,135 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const supabase = require('../config/supabase');
 const { logAction } = require('../middleware/audit');
+const {
+  authenticateWithPassword,
+  createAuthUser,
+  updateAuthUser,
+  updateCurrentUserPassword,
+  signOutAuthSession,
+  normalizeEmail
+} = require('../services/supabaseAuthService');
+const {
+  getAccessTokenCookieOptions,
+  getRefreshTokenCookieOptions,
+  getClearCookieOptions
+} = require('../utils/authCookies');
 
 const router = express.Router();
-const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const SESSION_EXPIRES_IN = '24h';
+const REFRESH_COOKIE_MAX_AGE_DAYS = Number.parseInt(process.env.AUTH_REFRESH_TOKEN_DAYS || '30', 10);
+const REFRESH_COOKIE_MAX_AGE_MS = Number.isFinite(REFRESH_COOKIE_MAX_AGE_DAYS) && REFRESH_COOKIE_MAX_AGE_DAYS > 0
+  ? REFRESH_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+  : 30 * 24 * 60 * 60 * 1000;
 
-const isProduction = process.env.NODE_ENV === 'production';
-const cookieSameSite = (process.env.COOKIE_SAME_SITE || (isProduction ? 'none' : 'lax')).toLowerCase();
-const cookieSecure = process.env.COOKIE_SECURE
-  ? process.env.COOKIE_SECURE === 'true'
-  : cookieSameSite === 'none' || isProduction;
-const cookieDomain = process.env.COOKIE_DOMAIN || undefined;
+const isMissingAuthUserIdColumnError = (error) => String(error?.message || '').toLowerCase().includes('auth_user_id');
 
-const getAuthCookieOptions = () => ({
-  httpOnly: true,
-  secure: cookieSecure,
-  sameSite: cookieSameSite,
-  maxAge: SESSION_MAX_AGE_MS,
-  expires: new Date(Date.now() + SESSION_MAX_AGE_MS),
-  path: '/',
-  ...(cookieDomain ? { domain: cookieDomain } : {})
-});
+const syncAuthUserLink = async (appUserId, authUserId) => {
+  if (!appUserId || !authUserId) {
+    return;
+  }
 
-const getClearCookieOptions = () => ({
-  httpOnly: true,
-  secure: cookieSecure,
-  sameSite: cookieSameSite,
-  path: '/',
-  ...(cookieDomain ? { domain: cookieDomain } : {})
-});
+  const { error } = await supabase
+    .from('users')
+    .update({ auth_user_id: authUserId })
+    .eq('id', appUserId);
+
+  if (error && !isMissingAuthUserIdColumnError(error)) {
+    throw error;
+  }
+};
+
+const attemptLegacyPasswordMigration = async ({ email, password }) => {
+  const normalizedEmail = normalizeEmail(email);
+
+  const { data: legacyUser, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('email', normalizedEmail)
+    .maybeSingle();
+
+  if (error || !legacyUser || !legacyUser.password_hash) {
+    return null;
+  }
+
+  const isValidPassword = await bcrypt.compare(password, legacyUser.password_hash);
+
+  if (!isValidPassword) {
+    return null;
+  }
+
+  const provisionResult = await createAuthUser({
+    email: legacyUser.email,
+    password,
+    role: legacyUser.role,
+    fullName: legacyUser.full_name
+  });
+
+  if (!provisionResult?.user?.id) {
+    return null;
+  }
+
+  await updateAuthUser(provisionResult.user.id, {
+    password,
+    role: legacyUser.role,
+    fullName: legacyUser.full_name
+  });
+
+  await syncAuthUserLink(legacyUser.id, provisionResult.user.id);
+
+  return authenticateWithPassword(legacyUser.email, password);
+};
+
+const getAppUserByAuthIdentity = async (authUser) => {
+  let missingAuthColumn = false;
+  let userRecord = null;
+
+  if (authUser?.id) {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('auth_user_id', authUser.id)
+      .maybeSingle();
+
+    if (error && isMissingAuthUserIdColumnError(error)) {
+      missingAuthColumn = true;
+    } else if (error) {
+      throw error;
+    } else {
+      userRecord = data;
+    }
+  }
+
+  if (!userRecord) {
+    const normalizedEmail = normalizeEmail(authUser?.email);
+    if (!normalizedEmail) {
+      return { userRecord: null, missingAuthColumn };
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', normalizedEmail)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    userRecord = data;
+  }
+
+  if (userRecord && !missingAuthColumn && authUser?.id && !userRecord.auth_user_id) {
+    await supabase
+      .from('users')
+      .update({ auth_user_id: authUser.id })
+      .eq('id', userRecord.id);
+
+    userRecord.auth_user_id = authUser.id;
+  }
+
+  return { userRecord, missingAuthColumn };
+};
 
 // Login endpoint
 router.post('/login', async (req, res) => {
@@ -42,38 +140,41 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Find user by email
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', email.toLowerCase())
-      .single();
+    let authPayload;
+    try {
+      authPayload = await authenticateWithPassword(email, password);
+    } catch (authError) {
+      try {
+        authPayload = await attemptLegacyPasswordMigration({ email, password });
+      } catch (migrationError) {
+        if (migrationError?.code === 'SUPABASE_ADMIN_REQUIRED') {
+          return res.status(500).json({ error: migrationError.message });
+        }
 
-    if (error || !user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+        throw migrationError;
+      }
+
+      if (!authPayload) {
+        return res.status(401).json({ error: 'Invalid email or password' });
+      }
+    }
+
+    const session = authPayload?.session;
+    const authUser = authPayload?.user;
+
+    if (!session || !authUser) {
+      return res.status(401).json({ error: 'Unable to establish session. Please try again.' });
+    }
+
+    const { userRecord: user } = await getAppUserByAuthIdentity(authUser);
+
+    if (!user) {
+      return res.status(403).json({ error: 'No application profile found for this account.' });
     }
 
     if (!user.is_active) {
       return res.status(403).json({ error: 'Account is deactivated. Contact administrator.' });
     }
-
-    // Verify password
-    const isValidPassword = await bcrypt.compare(password, user.password_hash);
-    
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { 
-        userId: user.id, 
-        email: user.email, 
-        role: user.role 
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: SESSION_EXPIRES_IN }
-    );
 
     // Update last login
     await supabase
@@ -112,8 +213,16 @@ router.post('/login', async (req, res) => {
       user.id
     );
 
-    // Set HTTP-only cookie with strict 24h lifetime
-    res.cookie('token', token, getAuthCookieOptions());
+    const expiresInSeconds = Number.parseInt(session.expires_in, 10);
+    const accessTokenMaxAgeMs = Number.isFinite(expiresInSeconds) && expiresInSeconds > 0
+      ? expiresInSeconds * 1000
+      : undefined;
+
+    res.cookie('token', session.access_token, getAccessTokenCookieOptions(accessTokenMaxAgeMs));
+
+    if (session.refresh_token) {
+      res.cookie('refresh_token', session.refresh_token, getRefreshTokenCookieOptions(REFRESH_COOKIE_MAX_AGE_MS));
+    }
 
     res.json({
       message: 'Login successful',
@@ -200,37 +309,13 @@ router.put('/change-password', async (req, res) => {
         return res.status(400).json({ error: 'New password must be at least 6 characters' });
       }
 
-      // Get current user with password
-      const { data: user, error } = await supabase
-        .from('users')
-        .select('id, password_hash')
-        .eq('id', req.user.id)
-        .single();
-
-      if (error || !user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      // Verify current password
-      const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
-      
-      if (!isValidPassword) {
+      try {
+        await authenticateWithPassword(req.user.email, currentPassword);
+      } catch {
         return res.status(401).json({ error: 'Current password is incorrect' });
       }
 
-      // Hash new password
-      const salt = await bcrypt.genSalt(10);
-      const newPasswordHash = await bcrypt.hash(newPassword, salt);
-
-      // Update password
-      const { error: updateError } = await supabase
-        .from('users')
-        .update({ password_hash: newPasswordHash })
-        .eq('id', req.user.id);
-
-      if (updateError) {
-        throw updateError;
-      }
+      await updateCurrentUserPassword(req.authAccessToken, newPassword);
 
       await logAction(req, 'UPDATE', 'user', req.user.id, { field: 'password' });
 
@@ -250,9 +335,15 @@ router.post('/logout', async (req, res) => {
   verifyToken(req, res, async () => {
     try {
       await logAction(req, 'LOGOUT', 'user', req.user.id);
+
+      try {
+        await signOutAuthSession(req.authAccessToken);
+      } catch {
+        // Session revoke failures should not block logout response.
+      }
       
-      // Clear the cookie
       res.clearCookie('token', getClearCookieOptions());
+      res.clearCookie('refresh_token', getClearCookieOptions());
       
       res.json({ message: 'Logged out successfully' });
     } catch (error) {

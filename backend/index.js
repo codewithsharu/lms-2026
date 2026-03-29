@@ -71,7 +71,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-const sensitivePreviewFields = ['password', 'password_hash', 'token', 'secret', 'authorization', 'cookie'];
+const sensitivePreviewFields = ['password', 'password_hash', 'token', 'refresh_token', 'secret', 'authorization', 'cookie'];
 
 const sanitizePreviewValue = (fieldName, value) => {
   const normalizedFieldName = String(fieldName || '').toLowerCase();
@@ -131,7 +131,7 @@ app.get('/api/db-status', async (req, res) => {
     ];
 
     const expectedTableSchemas = {
-      users: ['id', 'email', 'password_hash', 'full_name', 'phone', 'profile_photo', 'role', 'is_active', 'created_at', 'updated_at', 'created_by', 'last_login'],
+      users: ['id', 'email', 'password_hash', 'auth_user_id', 'full_name', 'phone', 'profile_photo', 'role', 'is_active', 'created_at', 'updated_at', 'created_by', 'last_login'],
       classes: ['id', 'name', 'description', 'academic_year', 'is_active', 'created_at', 'updated_at'],
       sections: ['id', 'class_id', 'name', 'description', 'is_active', 'created_at', 'updated_at'],
       student_details: ['id', 'user_id', 'roll_number', 'class_id', 'section_id', 'zone', 'date_of_birth', 'gender', 'address', 'guardian_name', 'guardian_phone', 'admission_date', 'created_at', 'updated_at'],
