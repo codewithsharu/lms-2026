@@ -5,51 +5,67 @@
  */
 
 require('dotenv').config();
-const bcrypt = require('bcryptjs');
-const { createClient } = require('@supabase/supabase-js');
-
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error('Error: SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env');
-  process.exit(1);
-}
-
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabase = require('../config/supabase');
+const { createAuthUser } = require('../services/supabaseAuthService');
 
 const ADMIN_EMAIL = 'admin@college.edu';
 const ADMIN_PASSWORD = 'Admin@123456';
 const ADMIN_NAME = 'System Administrator';
+const LEGACY_PASSWORD_PLACEHOLDER = '__SUPABASE_AUTH__';
 
 async function seedAdmin() {
   try {
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      throw new Error('SUPABASE_SERVICE_ROLE_KEY must be set in .env to seed admin auth account.');
+    }
+
     console.log('Checking if admin user already exists...');
     
     // Check if admin exists
     const { data: existingAdmin } = await supabase
       .from('users')
-      .select('id')
+      .select('id, auth_user_id')
       .eq('email', ADMIN_EMAIL)
-      .single();
+      .maybeSingle();
+
+    let authProvisionResult = null;
+
+    if (!existingAdmin?.auth_user_id) {
+      console.log('Ensuring admin auth account exists...');
+      authProvisionResult = await createAuthUser({
+        email: ADMIN_EMAIL,
+        password: ADMIN_PASSWORD,
+        role: 'admin',
+        fullName: ADMIN_NAME,
+        isActive: true
+      });
+    }
 
     if (existingAdmin) {
+      if (authProvisionResult?.user?.id && !existingAdmin.auth_user_id) {
+        await supabase
+          .from('users')
+          .update({ auth_user_id: authProvisionResult.user.id })
+          .eq('id', existingAdmin.id);
+      }
+
       console.log('Admin user already exists. Skipping...');
       return;
     }
 
     console.log('Creating admin user...');
 
-    // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, salt);
+    if (!authProvisionResult?.user?.id) {
+      throw new Error('Failed to provision admin auth account.');
+    }
 
     // Create admin user
     const { data: newAdmin, error } = await supabase
       .from('users')
       .insert({
         email: ADMIN_EMAIL,
-        password_hash: passwordHash,
+        password_hash: LEGACY_PASSWORD_PLACEHOLDER,
+        auth_user_id: authProvisionResult.user.id,
         full_name: ADMIN_NAME,
         role: 'admin',
         is_active: true

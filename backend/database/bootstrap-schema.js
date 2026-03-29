@@ -95,12 +95,12 @@ const bootstrapSchemaOnStart = async () => {
   try {
     const missingBefore = await getMissingTables(client, requiredTables);
 
-    if (missingBefore.length === 0) {
-      console.log('[SchemaSync] Schema already aligned.');
-      return;
+    if (missingBefore.length > 0) {
+      console.log(`[SchemaSync] Missing tables detected: ${missingBefore.join(', ')}. Applying ${path.basename(schemaFile)}...`);
+    } else {
+      console.log(`[SchemaSync] Required tables exist. Applying ${path.basename(schemaFile)} for idempotent schema migrations...`);
     }
 
-    console.log(`[SchemaSync] Missing tables detected: ${missingBefore.join(', ')}. Applying ${path.basename(schemaFile)}...`);
     await client.query(sql);
 
     const missingAfter = await getMissingTables(client, requiredTables);

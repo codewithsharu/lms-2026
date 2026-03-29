@@ -1,12 +1,18 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const supabase = require('../config/supabase');
 const { verifyToken, isAdmin, hasRole } = require('../middleware/auth');
 const { logAction } = require('../middleware/audit');
+const {
+  createAuthUser,
+  updateAuthUser,
+  deleteAuthUser,
+  findAuthUserByEmail
+} = require('../services/supabaseAuthService');
 
 const router = express.Router();
+const LEGACY_PASSWORD_PLACEHOLDER = '__SUPABASE_AUTH__';
 
 const bulkUploadStorage = multer.memoryStorage();
 const bulkUpload = multer({
@@ -33,6 +39,63 @@ const getPasswordFromEmailPrefix = (email) => {
   const localPart = normalizedEmail.slice(0, atIndex).trim();
   return localPart || null;
 };
+
+const isMissingAuthUserIdColumnError = (error) => String(error?.message || '').toLowerCase().includes('auth_user_id');
+
+const insertUserWithOptionalAuthLink = async (payload, selectClause = '*') => {
+  const { auth_user_id: _authUserId, ...fallbackPayload } = payload;
+
+  const withAuth = await supabase
+    .from('users')
+    .insert(payload)
+    .select(selectClause)
+    .single();
+
+  if (!withAuth.error || !isMissingAuthUserIdColumnError(withAuth.error)) {
+    return withAuth;
+  }
+
+  return supabase
+    .from('users')
+    .insert(fallbackPayload)
+    .select(selectClause)
+    .single();
+};
+
+const syncAuthUserIdOnAppUser = async (appUserId, authUserId) => {
+  if (!appUserId || !authUserId) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from('users')
+    .update({ auth_user_id: authUserId })
+    .eq('id', appUserId);
+
+  if (error && !isMissingAuthUserIdColumnError(error)) {
+    throw error;
+  }
+};
+
+const resolveAuthUserId = async ({ authUserId, email, appUserId = null }) => {
+  if (authUserId) {
+    return authUserId;
+  }
+
+  const authUser = await findAuthUserByEmail(email);
+
+  if (!authUser?.id) {
+    return null;
+  }
+
+  if (appUserId) {
+    await syncAuthUserIdOnAppUser(appUserId, authUser.id);
+  }
+
+  return authUser.id;
+};
+
+const isAuthAdminMissingError = (error) => error?.code === 'SUPABASE_ADMIN_REQUIRED';
 
 const hasSectionAccess = (assignments, sectionId) => {
   if (!sectionId) {
@@ -436,23 +499,61 @@ router.post('/teacher/classes/:classId/students', verifyToken, hasRole('teacher'
       return res.status(400).json({ error: 'Email already exists' });
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(derivedPassword, salt);
+    let authProvisionResult;
 
-    const { data: newUser, error: userError } = await supabase
-      .from('users')
-      .insert({
+    try {
+      authProvisionResult = await createAuthUser({
         email: normalizedEmail,
-        password_hash: passwordHash,
+        password: derivedPassword,
+        role: 'student',
+        fullName: normalizedFullName,
+        isActive: true
+      });
+    } catch (authError) {
+      if (isAuthAdminMissingError(authError)) {
+        return res.status(500).json({ error: authError.message });
+      }
+
+      throw authError;
+    }
+
+    if (!authProvisionResult?.user?.id) {
+      return res.status(500).json({ error: 'Failed to provision auth account for student.' });
+    }
+
+    if (!authProvisionResult.created) {
+      await updateAuthUser(authProvisionResult.user.id, {
+        password: derivedPassword,
+        role: 'student',
+        fullName: normalizedFullName,
+        isActive: true
+      });
+    }
+
+    const { data: newUser, error: userError } = await insertUserWithOptionalAuthLink(
+      {
+        email: normalizedEmail,
+        password_hash: LEGACY_PASSWORD_PLACEHOLDER,
+        auth_user_id: authProvisionResult.user.id,
         full_name: normalizedFullName,
         phone: normalizedPhone,
         role: 'student',
         created_by: req.user.id
-      })
-      .select('id, email, full_name, role')
-      .single();
+      },
+      'id, email, full_name, role'
+    );
 
-    if (userError) throw userError;
+    if (userError) {
+      if (authProvisionResult.created) {
+        try {
+          await deleteAuthUser(authProvisionResult.user.id);
+        } catch {
+          // Best effort rollback for provisioned auth account.
+        }
+      }
+
+      throw userError;
+    }
 
     const { error: studentError } = await supabase
       .from('student_details')
@@ -466,6 +567,15 @@ router.post('/teacher/classes/:classId/students', verifyToken, hasRole('teacher'
 
     if (studentError) {
       await supabase.from('users').delete().eq('id', newUser.id);
+
+      if (authProvisionResult.created) {
+        try {
+          await deleteAuthUser(authProvisionResult.user.id);
+        } catch {
+          // Best effort rollback for provisioned auth account.
+        }
+      }
+
       throw studentError;
     }
 
@@ -686,23 +796,77 @@ router.post('/teacher/classes/:classId/students/bulk-import', verifyToken, hasRo
       }
 
       const derivedPassword = getPasswordFromEmailPrefix(row.email);
-      const salt = await bcrypt.genSalt(10);
-      const passwordHash = await bcrypt.hash(derivedPassword, salt);
+      let authProvisionResult;
 
-      const { data: newUser, error: userError } = await supabase
-        .from('users')
-        .insert({
+      try {
+        authProvisionResult = await createAuthUser({
           email: row.email,
-          password_hash: passwordHash,
+          password: derivedPassword,
+          role: 'student',
+          fullName: row.full_name,
+          isActive: true
+        });
+      } catch (authError) {
+        if (isAuthAdminMissingError(authError)) {
+          results.push({
+            email: row.email,
+            roll_number: row.roll_number,
+            status: 'skipped',
+            reasons: [authError.message]
+          });
+          continue;
+        }
+
+        results.push({
+          email: row.email,
+          roll_number: row.roll_number,
+          status: 'skipped',
+          reasons: [authError.message || 'Failed to provision auth account']
+        });
+        continue;
+      }
+
+      if (!authProvisionResult?.user?.id) {
+        results.push({
+          email: row.email,
+          roll_number: row.roll_number,
+          status: 'skipped',
+          reasons: ['Failed to provision auth account']
+        });
+        continue;
+      }
+
+      if (!authProvisionResult.created) {
+        await updateAuthUser(authProvisionResult.user.id, {
+          password: derivedPassword,
+          role: 'student',
+          fullName: row.full_name,
+          isActive: true
+        });
+      }
+
+      const { data: newUser, error: userError } = await insertUserWithOptionalAuthLink(
+        {
+          email: row.email,
+          password_hash: LEGACY_PASSWORD_PLACEHOLDER,
+          auth_user_id: authProvisionResult.user.id,
           full_name: row.full_name,
           phone: row.phone || null,
           role: 'student',
           created_by: req.user.id
-        })
-        .select('id, email, full_name')
-        .single();
+        },
+        'id, email, full_name'
+      );
 
       if (userError) {
+        if (authProvisionResult.created) {
+          try {
+            await deleteAuthUser(authProvisionResult.user.id);
+          } catch {
+            // Best effort rollback for provisioned auth account.
+          }
+        }
+
         results.push({
           email: row.email,
           roll_number: row.roll_number,
@@ -724,6 +888,15 @@ router.post('/teacher/classes/:classId/students/bulk-import', verifyToken, hasRo
 
       if (studentError) {
         await supabase.from('users').delete().eq('id', newUser.id);
+
+        if (authProvisionResult.created) {
+          try {
+            await deleteAuthUser(authProvisionResult.user.id);
+          } catch {
+            // Best effort rollback for provisioned auth account.
+          }
+        }
+
         results.push({
           email: row.email,
           roll_number: row.roll_number,
@@ -797,7 +970,7 @@ router.put('/teacher/classes/:classId/students/:studentId', verifyToken, hasRole
 
     const { data: studentUser, error: studentUserError } = await supabase
       .from('users')
-      .select('id, email, role')
+      .select('*')
       .eq('id', studentId)
       .maybeSingle();
 
@@ -876,6 +1049,52 @@ router.put('/teacher/classes/:classId/students/:studentId', verifyToken, hasRole
     if (phone !== undefined) userUpdateData.phone = phone || null;
     if (is_active !== undefined) userUpdateData.is_active = is_active;
 
+    const effectiveEmail = userUpdateData.email || studentUser.email;
+    const effectiveFullName = userUpdateData.full_name || studentUser.full_name;
+    const effectiveIsActive = is_active !== undefined ? is_active : studentUser.is_active;
+
+    try {
+      let authUserId = await resolveAuthUserId({
+        authUserId: studentUser.auth_user_id,
+        email: studentUser.email,
+        appUserId: studentUser.id
+      });
+
+      if (!authUserId) {
+        const bootstrapPassword = getPasswordFromEmailPrefix(effectiveEmail) || 'Temp@12345';
+        const provisionResult = await createAuthUser({
+          email: effectiveEmail,
+          password: bootstrapPassword,
+          role: 'student',
+          fullName: effectiveFullName,
+          isActive: effectiveIsActive
+        });
+
+        authUserId = provisionResult?.user?.id || null;
+
+        if (!authUserId) {
+          return res.status(500).json({ error: 'Unable to provision auth account for student update.' });
+        }
+
+        await syncAuthUserIdOnAppUser(studentUser.id, authUserId);
+      }
+
+      const authUpdatePayload = {
+        ...(userUpdateData.email !== undefined ? { email: userUpdateData.email } : {}),
+        ...(userUpdateData.full_name !== undefined ? { fullName: userUpdateData.full_name } : {})
+      };
+
+      if (Object.keys(authUpdatePayload).length > 0) {
+        await updateAuthUser(authUserId, authUpdatePayload);
+      }
+    } catch (authError) {
+      if (isAuthAdminMissingError(authError)) {
+        return res.status(500).json({ error: authError.message });
+      }
+
+      throw authError;
+    }
+
     if (Object.keys(userUpdateData).length > 0) {
       const { error: updateUserError } = await supabase
         .from('users')
@@ -942,7 +1161,7 @@ router.delete('/teacher/classes/:classId/students/:studentId', verifyToken, hasR
 
     const { data: studentUser, error: studentUserError } = await supabase
       .from('users')
-      .select('id, email, role')
+      .select('*')
       .eq('id', studentId)
       .maybeSingle();
 
@@ -984,6 +1203,24 @@ router.delete('/teacher/classes/:classId/students/:studentId', verifyToken, hasR
       .eq('created_by', studentId);
 
     if (createdByError) throw createdByError;
+
+    try {
+      const authUserId = await resolveAuthUserId({
+        authUserId: studentUser.auth_user_id,
+        email: studentUser.email,
+        appUserId: studentUser.id
+      });
+
+      if (authUserId) {
+        await deleteAuthUser(authUserId);
+      }
+    } catch (authError) {
+      if (isAuthAdminMissingError(authError)) {
+        return res.status(500).json({ error: authError.message });
+      }
+
+      throw authError;
+    }
 
     const { error: deleteUserError } = await supabase
       .from('users')

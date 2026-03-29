@@ -2,7 +2,8 @@
 CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email VARCHAR(255) UNIQUE NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
+  password_hash VARCHAR(255),
+  auth_user_id UUID,
   full_name VARCHAR(255) NOT NULL,
   phone VARCHAR(20),
   profile_photo VARCHAR(500),
@@ -13,6 +14,22 @@ CREATE TABLE IF NOT EXISTS users (
   created_by UUID REFERENCES users(id),
   last_login TIMESTAMP WITH TIME ZONE
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_user_id UUID;
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'users_auth_user_id_unique'
+  ) THEN
+    ALTER TABLE users
+      ADD CONSTRAINT users_auth_user_id_unique UNIQUE (auth_user_id);
+  END IF;
+END
+$$;
 
 -- Classes table (must be before student_details and sections)
 CREATE TABLE IF NOT EXISTS classes (
@@ -156,6 +173,7 @@ CREATE TABLE IF NOT EXISTS assessment_attempts (
 -- Indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+CREATE INDEX IF NOT EXISTS idx_users_auth_user_id ON users(auth_user_id);
 CREATE INDEX IF NOT EXISTS idx_student_details_user ON student_details(user_id);
 CREATE INDEX IF NOT EXISTS idx_student_details_class ON student_details(class_id);
 CREATE INDEX IF NOT EXISTS idx_teacher_details_user ON teacher_details(user_id);
