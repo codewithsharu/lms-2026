@@ -83,6 +83,7 @@ const HostExamCreate = () => {
     specific_student_id: '',
     duration_minutes: 60,
     max_attempts: 1,
+    allow_resume: true,
     result_mode: 'after_end',
     publish_status: 'draft',
     start_time: '',
@@ -274,6 +275,11 @@ const HostExamCreate = () => {
       return;
     }
 
+    if (!selectedTemplate || Number(selectedTemplate.question_count || 0) <= 0) {
+      toast.error('Selected template has no questions. Add questions before scheduling the exam');
+      return;
+    }
+
     if (!formData.duration_minutes || !formData.max_attempts) {
       toast.error('Duration and attempts are required');
       return;
@@ -304,11 +310,11 @@ const HostExamCreate = () => {
 
     try {
       setHosting(true);
-      await assessmentAPI.hostExam({
+      const response = await assessmentAPI.hostExam({
         ...formData,
         assigned_student_ids: formData.specific_student_id ? [formData.specific_student_id] : []
       });
-      toast.success('Exam hosted successfully');
+      toast.success(response.data?.message || 'Exam hosted successfully');
       navigate('/teacher/assessments/host');
     } catch (error) {
       toast.error(error.response?.data?.error || 'Failed to host exam');
@@ -428,6 +434,16 @@ const HostExamCreate = () => {
                 value={formData.max_attempts}
                 onChange={(e) => setFormData({ ...formData, max_attempts: e.target.value })}
                 required
+              />
+
+              <SelectMenu
+                label="Resume Attempt"
+                value={formData.allow_resume ? 'true' : 'false'}
+                onChange={(nextValue) => setFormData({ ...formData, allow_resume: nextValue === 'true' })}
+                options={[
+                  { value: 'true', label: 'Allow resume after exit' },
+                  { value: 'false', label: 'Do not allow resume after exit' }
+                ]}
               />
 
               <SelectMenu
