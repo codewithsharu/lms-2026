@@ -1,0 +1,882 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OneCompiler API Simple Test</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --pass: #1f9d55;
+      --fail: #dc2626;
+      --blocked: #d97706;
+      --info: #2563eb;
+      --skip: #6b7280;
+      --border: #e5e7eb;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #eef2ff 0%, var(--bg) 180px);
+      color: var(--text);
+      font: 14px/1.45 "Segoe UI", Tahoma, sans-serif;
+    }
+
+    .wrap {
+      max-width: 1080px;
+      margin: 24px auto;
+      padding: 0 16px 32px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+    }
+
+    p {
+      margin: 6px 0;
+      color: var(--muted);
+    }
+
+    .controls {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: 1fr 1fr auto;
+      align-items: end;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 10px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    input[type="text"]:focus {
+      border-color: #6366f1;
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    }
+
+    .right-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: flex-end;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      color: #fff;
+      background: #111827;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .small {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .checkbox {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+      user-select: none;
+    }
+
+    .field-stack {
+      display: grid;
+      gap: 8px;
+    }
+
+    .results-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .status-pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      color: #fff;
+    }
+
+    .PASS { background: var(--pass); }
+    .FAIL { background: var(--fail); }
+    .BLOCKED { background: var(--blocked); }
+    .INFO { background: var(--info); }
+    .SKIP { background: var(--skip); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--border);
+      padding: 10px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }
+
+    th {
+      background: #f9fafb;
+      font-weight: 700;
+      color: #374151;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    code,
+    pre {
+      font-family: Consolas, "Courier New", monospace;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 8px;
+      margin: 8px 0 0;
+      max-height: 180px;
+      overflow: auto;
+    }
+
+    details summary {
+      cursor: pointer;
+      color: #374151;
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .footer-note {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+
+    @media (max-width: 900px) {
+      .controls {
+        grid-template-columns: 1fr;
+      }
+
+      .right-actions {
+        align-items: flex-start;
+      }
+
+      th:nth-child(3),
+      td:nth-child(3) {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>OneCompiler API Test</h1>
+      <p>Simple browser runner to test code execution, enterprise, studio, challenge, reports, and embed endpoints.</p>
+      <p class="small">Tip: serve this file over localhost (for example with python -m http.server) instead of opening with file://</p>
+
+      <div class="controls">
+        <div class="field-stack">
+          <label for="apiKey">X-API-Key</label>
+          <input id="apiKey" type="text" placeholder="Paste your OneCompiler API key" />
+          <p class="small">Direct browser calls are usually blocked by CORS. Keep proxy mode enabled.</p>
+        </div>
+
+        <div class="field-stack">
+          <label for="proxyUrl">Local Proxy URL</label>
+          <input id="proxyUrl" type="text" value="http://127.0.0.1:8787/proxy" />
+          <label class="checkbox" for="useProxy">
+            <input id="useProxy" type="checkbox" checked />
+            Use proxy fallback for API requests
+          </label>
+        </div>
+
+        <div class="right-actions">
+          <button id="runBtn">Run All Tests</button>
+          <label class="checkbox" for="cleanup">
+            <input id="cleanup" type="checkbox" checked />
+            Auto delete temp challenge
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="results-head">
+        <strong>Results</strong>
+        <span id="summary" class="small">No run yet</span>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 170px;">Status</th>
+            <th>Test</th>
+            <th style="width: 90px;">HTTP</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+
+      <div class="footer-note">Blocked means the API key is valid but that feature is not enabled on the account plan.</div>
+    </div>
+  </div>
+
+  <script>
+    const apiKeyInput = document.getElementById("apiKey");
+    const runBtn = document.getElementById("runBtn");
+    const cleanupCheckbox = document.getElementById("cleanup");
+    const useProxyCheckbox = document.getElementById("useProxy");
+    const proxyUrlInput = document.getElementById("proxyUrl");
+    const resultsBody = document.getElementById("resultsBody");
+    const summaryEl = document.getElementById("summary");
+
+    function randomToken() {
+      return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function addRow(status, name, httpStatus, details, raw) {
+      const tr = document.createElement("tr");
+
+      const statusTd = document.createElement("td");
+      statusTd.innerHTML = `<span class="status-pill ${status}">${status}</span>`;
+
+      const nameTd = document.createElement("td");
+      nameTd.textContent = name;
+
+      const codeTd = document.createElement("td");
+      codeTd.textContent = httpStatus == null ? "-" : String(httpStatus);
+
+      const detailsTd = document.createElement("td");
+      detailsTd.textContent = details || "";
+
+      if (raw !== undefined) {
+        const detailsWrap = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Raw";
+        const pre = document.createElement("pre");
+        pre.textContent = typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
+        detailsWrap.appendChild(summary);
+        detailsWrap.appendChild(pre);
+        detailsTd.appendChild(detailsWrap);
+      }
+
+      tr.appendChild(statusTd);
+      tr.appendChild(nameTd);
+      tr.appendChild(codeTd);
+      tr.appendChild(detailsTd);
+      resultsBody.appendChild(tr);
+    }
+
+    function addFail(name, resp) {
+      addRow(
+        "FAIL",
+        name,
+        resp && resp.httpStatus != null ? resp.httpStatus : null,
+        resp && resp.error ? resp.error : "Request failed",
+        resp ? (resp.json || resp.text) : undefined
+      );
+    }
+
+    function setSummary() {
+      const statuses = [...resultsBody.querySelectorAll(".status-pill")].map((el) => el.textContent);
+      const pass = statuses.filter((s) => s === "PASS").length;
+      const fail = statuses.filter((s) => s === "FAIL").length;
+      const blocked = statuses.filter((s) => s === "BLOCKED").length;
+      const info = statuses.filter((s) => s === "INFO").length;
+      const skip = statuses.filter((s) => s === "SKIP").length;
+      summaryEl.textContent = `PASS ${pass} | FAIL ${fail} | BLOCKED ${blocked} | INFO ${info} | SKIP ${skip}`;
+    }
+
+    async function directFetch(request) {
+      try {
+        const res = await fetch(request.url, {
+          method: request.method || "GET",
+          headers: request.headers || {},
+          body: request.body
+        });
+        const text = await res.text();
+        let json = null;
+        try {
+          json = text ? JSON.parse(text) : null;
+        } catch {
+          json = null;
+        }
+        if (!res.ok) {
+          return {
+            ok: false,
+            httpStatus: res.status,
+            error: text || `HTTP ${res.status}`,
+            text,
+            json,
+            viaProxy: false
+          };
+        }
+
+        return { ok: true, httpStatus: res.status, text, json, viaProxy: false };
+      } catch (error) {
+        return { ok: false, httpStatus: null, error: String(error), viaProxy: false };
+      }
+    }
+
+    async function proxyFetch(request) {
+      const proxyUrl = proxyUrlInput.value.trim();
+      if (!proxyUrl) {
+        return { ok: false, httpStatus: null, error: "Proxy URL is empty", viaProxy: true };
+      }
+
+      try {
+        const proxyRes = await fetch(proxyUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: request.url,
+            method: request.method || "GET",
+            headers: request.headers || {},
+            body: request.body || null
+          })
+        });
+
+        const proxyText = await proxyRes.text();
+        let proxyJson = null;
+        try {
+          proxyJson = proxyText ? JSON.parse(proxyText) : null;
+        } catch {
+          proxyJson = null;
+        }
+
+        if (!proxyRes.ok || !proxyJson || proxyJson.ok !== true) {
+          return {
+            ok: false,
+            httpStatus: proxyRes.status,
+            error: (proxyJson && proxyJson.error) || proxyText || "Proxy request failed",
+            viaProxy: true
+          };
+        }
+
+        const bodyText = typeof proxyJson.body === "string" ? proxyJson.body : "";
+        let bodyJson = null;
+        try {
+          bodyJson = bodyText ? JSON.parse(bodyText) : null;
+        } catch {
+          bodyJson = null;
+        }
+
+        return {
+          ok: proxyJson.status >= 200 && proxyJson.status < 300,
+          httpStatus: proxyJson.status,
+          error: proxyJson.status >= 200 && proxyJson.status < 300 ? null : (bodyText || `HTTP ${proxyJson.status}`),
+          text: bodyText,
+          json: bodyJson,
+          viaProxy: true
+        };
+      } catch (error) {
+        return { ok: false, httpStatus: null, error: String(error), viaProxy: true };
+      }
+    }
+
+    async function callApi(name, request) {
+      const direct = await directFetch(request);
+      if (direct.ok) {
+        return direct;
+      }
+
+      const shouldTryProxy = useProxyCheckbox.checked;
+      if (!shouldTryProxy) {
+        return direct;
+      }
+
+      const isLikelyCors = (direct.error || "").toLowerCase().includes("failed to fetch");
+      if (!isLikelyCors) {
+        return direct;
+      }
+
+      const proxied = await proxyFetch(request);
+      if (!proxied.ok) {
+        return {
+          ok: false,
+          httpStatus: proxied.httpStatus,
+          error: `Direct: ${direct.error} | Proxy: ${proxied.error}`,
+          viaProxy: true
+        };
+      }
+
+      return proxied;
+    }
+
+    async function checkIframeLoad(name, url) {
+      return new Promise((resolve) => {
+        const iframe = document.createElement("iframe");
+        iframe.style.width = "1px";
+        iframe.style.height = "1px";
+        iframe.style.border = "0";
+        iframe.style.position = "absolute";
+        iframe.style.left = "-9999px";
+
+        const timeout = setTimeout(() => {
+          iframe.remove();
+          resolve({ name, status: "FAIL", details: "Load timeout", httpStatus: null });
+        }, 12000);
+
+        iframe.onload = () => {
+          clearTimeout(timeout);
+          iframe.remove();
+          resolve({ name, status: "PASS", details: "iframe loaded", httpStatus: 200 });
+        };
+
+        iframe.src = url;
+        document.body.appendChild(iframe);
+      });
+    }
+
+    async function runTests() {
+      const apiKey = apiKeyInput.value.trim();
+      if (!apiKey) {
+        alert("Paste the API key first.");
+        return;
+      }
+
+      runBtn.disabled = true;
+      runBtn.textContent = "Running...";
+      resultsBody.innerHTML = "";
+      summaryEl.textContent = "Running tests...";
+
+      const state = {
+        apiKey,
+        userEmail: null,
+        userToken: null,
+        userId: null,
+        challengeId: null
+      };
+
+      const runHeaders = {
+        "Content-Type": "application/json",
+        "X-API-Key": apiKey
+      };
+
+      const uid = randomToken();
+      state.userEmail = `apitest-${uid}@example.com`;
+      const updatedEmail = `apitest-updated-${uid}@example.com`;
+
+      {
+        const resp = await callApi("GET /api/v1/languages", {
+          url: "https://onecompiler.com/api/v1/languages"
+        });
+
+        if (!resp.ok) {
+          addFail("GET /api/v1/languages", resp);
+        } else {
+          const count = Array.isArray(resp.json) ? resp.json.length : (resp.json && Array.isArray(resp.json.languages) ? resp.json.languages.length : 0);
+          addRow(count > 0 ? "PASS" : "FAIL", "GET /api/v1/languages", resp.httpStatus, `languages_count=${count}`, resp.json || resp.text);
+        }
+      }
+
+      {
+        const body = {
+          language: "python",
+          stdin: "Peter",
+          files: [{ name: "main.py", content: "import sys\nname=sys.stdin.readline().strip()\nprint('Hello '+name)" }]
+        };
+        const resp = await callApi("POST /v1/run", {
+          url: "https://api.onecompiler.com/v1/run",
+          method: "POST",
+          headers: runHeaders,
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          addFail("POST /v1/run", resp);
+        } else {
+          const pass = resp.json && resp.json.status === "success";
+          addRow(pass ? "PASS" : "FAIL", "POST /v1/run", resp.httpStatus, `status=${resp.json && resp.json.status}`, resp.json || resp.text);
+        }
+      }
+
+      {
+        const body = {
+          language: "python",
+          stdin: ["Peter", "Brian"],
+          files: [{ name: "main.py", content: "import sys\nname=sys.stdin.readline().strip()\nprint('Hello '+name)" }]
+        };
+        const resp = await callApi("POST /v1/run (batch)", {
+          url: "https://api.onecompiler.com/v1/run",
+          method: "POST",
+          headers: runHeaders,
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          addFail("POST /v1/run (batch)", resp);
+        } else {
+          const count = Array.isArray(resp.json) ? resp.json.length : 0;
+          addRow(count > 0 ? "PASS" : "FAIL", "POST /v1/run (batch)", resp.httpStatus, `responses=${count}`, resp.json || resp.text);
+        }
+      }
+
+      {
+        const body = {
+          language: "xyz",
+          stdin: "test",
+          files: [{ name: "main.xyz", content: "hello" }]
+        };
+        const resp = await callApi("POST /v1/run (invalid language)", {
+          url: "https://api.onecompiler.com/v1/run",
+          method: "POST",
+          headers: runHeaders,
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          addFail("POST /v1/run (invalid language)", resp);
+        } else {
+          const expected = resp.json && resp.json.status === "failed";
+          addRow(expected ? "PASS" : "FAIL", "POST /v1/run (invalid language)", resp.httpStatus, resp.json && resp.json.error ? resp.json.error : "unexpected response", resp.json || resp.text);
+        }
+      }
+
+      {
+        const body = { name: `API Test ${uid}`, email: state.userEmail };
+        const resp = await callApi("POST /v1/users", {
+          url: "https://api.onecompiler.com/v1/users",
+          method: "POST",
+          headers: runHeaders,
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          addFail("POST /v1/users", resp);
+        } else {
+          state.userToken = resp.json && resp.json.api ? resp.json.api.token : null;
+          state.userId = resp.json ? resp.json._id : null;
+          const pass = Boolean(state.userToken);
+          addRow(pass ? "PASS" : "FAIL", "POST /v1/users", resp.httpStatus, pass ? `user_id=${state.userId}` : "api.token missing", resp.json || resp.text);
+        }
+      }
+
+      {
+        const body = { oldEmail: state.userEmail, newEmail: updatedEmail };
+        const resp = await callApi("PUT /v1/users/email", {
+          url: "https://api.onecompiler.com/v1/users/email",
+          method: "PUT",
+          headers: runHeaders,
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          addFail("PUT /v1/users/email", resp);
+        } else {
+          const pass = resp.json && resp.json.status === "success";
+          addRow(pass ? "PASS" : "FAIL", "PUT /v1/users/email", resp.httpStatus, `status=${resp.json && resp.json.status}`, resp.json || resp.text);
+          if (pass) {
+            state.userEmail = updatedEmail;
+          }
+        }
+      }
+
+      {
+        const resp = await callApi("GET /v1/studio/templates", {
+          url: "https://api.onecompiler.com/v1/studio/templates"
+        });
+
+        if (!resp.ok) {
+          addFail("GET /v1/studio/templates", resp);
+        } else {
+          const count = resp.json && Array.isArray(resp.json.templates) ? resp.json.templates.length : 0;
+          addRow(count > 0 ? "PASS" : "FAIL", "GET /v1/studio/templates", resp.httpStatus, `templates=${count}`, resp.json || resp.text);
+        }
+      }
+
+      if (state.userToken) {
+        const userHeaders = {
+          "Content-Type": "application/json",
+          "X-User-Token": state.userToken
+        };
+
+        {
+          const resp = await callApi("GET /v1/studio/workspaces", {
+            url: "https://api.onecompiler.com/v1/studio/workspaces",
+            headers: userHeaders
+          });
+
+          if (!resp.ok) {
+            addFail("GET /v1/studio/workspaces", resp);
+          } else {
+            const count = resp.json && Array.isArray(resp.json.workspaces) ? resp.json.workspaces.length : 0;
+            addRow("PASS", "GET /v1/studio/workspaces", resp.httpStatus, `workspaces=${count}`, resp.json || resp.text);
+          }
+        }
+
+        {
+          const body = { templateId: "nodejs", name: `API Test Workspace ${uid}` };
+          const resp = await callApi("POST /v1/studio/workspaces", {
+            url: "https://api.onecompiler.com/v1/studio/workspaces",
+            method: "POST",
+            headers: userHeaders,
+            body: JSON.stringify(body)
+          });
+
+          if (!resp.ok) {
+            addFail("POST /v1/studio/workspaces", resp);
+          } else {
+            const errorText = resp.json && resp.json.error ? String(resp.json.error) : "";
+            if (errorText.includes("E603")) {
+              addRow("BLOCKED", "POST /v1/studio/workspaces", resp.httpStatus, errorText, resp.json || resp.text);
+            } else if (resp.json && resp.json.workspace && resp.json.workspace._id) {
+              addRow("PASS", "POST /v1/studio/workspaces", resp.httpStatus, `workspace_id=${resp.json.workspace._id}`, resp.json || resp.text);
+            } else {
+              addRow("FAIL", "POST /v1/studio/workspaces", resp.httpStatus, "unexpected response", resp.json || resp.text);
+            }
+          }
+        }
+      } else {
+        addRow("SKIP", "GET /v1/studio/workspaces", null, "Skipped because user token was not created");
+        addRow("SKIP", "POST /v1/studio/workspaces", null, "Skipped because user token was not created");
+      }
+
+      {
+        const body = {
+          challenge: {
+            title: `API Browser Test ${uid}`,
+            markdown: "Created from simple test.html",
+            tags: ["api-test"],
+            visibility: "unlisted",
+            properties: {}
+          },
+          problems: [
+            {
+              title: "Echo",
+              markdown: "Read input and print same value",
+              properties: {
+                problemType: "code",
+                score: 1,
+                difficultyLevel: "easy",
+                options: {
+                  code: {
+                    supportedLanguages: ["python"],
+                    validations: [{ id: 1, input: "abc", output: "abc", label: "easy" }],
+                    problemCategory: "programmingLanguages",
+                    ignoreCase: true
+                  }
+                }
+              }
+            }
+          ]
+        };
+
+        const resp = await callApi("POST /v1/challenges/create", {
+          url: `https://api.onecompiler.com/v1/challenges/create?access_token=${encodeURIComponent(apiKey)}`,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          addFail("POST /v1/challenges/create", resp);
+        } else {
+          state.challengeId = (resp.json && resp.json.doc && resp.json.doc._id) || (resp.json && resp.json.challenge && resp.json.challenge._id) || null;
+          const pass = Boolean(state.challengeId);
+          addRow(pass ? "PASS" : "FAIL", "POST /v1/challenges/create", resp.httpStatus, pass ? `challenge_id=${state.challengeId}` : "challenge id not found", resp.json || resp.text);
+        }
+      }
+
+      if (state.challengeId) {
+        {
+          const resp = await callApi("GET /v1/challenges/{id}", {
+            url: `https://api.onecompiler.com/v1/challenges/${state.challengeId}?access_token=${encodeURIComponent(apiKey)}`
+          });
+
+          if (!resp.ok) {
+            addFail("GET /v1/challenges/{id}", resp);
+          } else {
+            addRow("PASS", "GET /v1/challenges/{id}", resp.httpStatus, "Read challenge response received", resp.json || resp.text);
+          }
+        }
+
+        {
+          const resp = await callApi("GET /v1/challenges/stats/summary", {
+            url: `https://api.onecompiler.com/v1/challenges/stats/summary?access_token=${encodeURIComponent(apiKey)}&challengeIds=${encodeURIComponent(state.challengeId)}`
+          });
+
+          if (!resp.ok) {
+            addFail("GET /v1/challenges/stats/summary", resp);
+          } else {
+            const pass = resp.json && resp.json.status === "success";
+            addRow(pass ? "PASS" : "FAIL", "GET /v1/challenges/stats/summary", resp.httpStatus, `status=${resp.json && resp.json.status}`, resp.json || resp.text);
+          }
+        }
+
+        {
+          const resp = await callApi("GET /v1/challenges/stats", {
+            url: `https://api.onecompiler.com/v1/challenges/stats?access_token=${encodeURIComponent(apiKey)}&challengeIds=${encodeURIComponent(state.challengeId)}`
+          });
+
+          if (!resp.ok) {
+            addFail("GET /v1/challenges/stats", resp);
+          } else {
+            const pass = resp.json && resp.json.status === "success";
+            addRow(pass ? "PASS" : "FAIL", "GET /v1/challenges/stats", resp.httpStatus, `status=${resp.json && resp.json.status}`, resp.json || resp.text);
+          }
+        }
+
+        if (state.userId) {
+          const resp = await callApi("GET /v1/challenges/submission/{challengeId}/{userId}", {
+            url: `https://api.onecompiler.com/v1/challenges/submission/${state.challengeId}/${state.userId}?access_token=${encodeURIComponent(apiKey)}`
+          });
+
+          if (!resp.ok) {
+            addFail("GET /v1/challenges/submission/{challengeId}/{userId}", resp);
+          } else {
+            const failedStatus = resp.json && resp.json.status === "failed";
+            if (failedStatus) {
+              addRow("INFO", "GET /v1/challenges/submission/{challengeId}/{userId}", resp.httpStatus, "No submission yet for this test user", resp.json || resp.text);
+            } else {
+              addRow("PASS", "GET /v1/challenges/submission/{challengeId}/{userId}", resp.httpStatus, "Submission payload returned", resp.json || resp.text);
+            }
+          }
+        } else {
+          addRow("SKIP", "GET /v1/challenges/submission/{challengeId}/{userId}", null, "Skipped because user id not available");
+        }
+
+        if (cleanupCheckbox.checked) {
+          const resp = await callApi("DELETE /v1/challenges/{id}", {
+            url: `https://api.onecompiler.com/v1/challenges/${state.challengeId}?access_token=${encodeURIComponent(apiKey)}`,
+            method: "DELETE"
+          });
+
+          if (!resp.ok) {
+            addFail("DELETE /v1/challenges/{id}", resp);
+          } else {
+            const pass = resp.json && resp.json.status === "success";
+            addRow(pass ? "PASS" : "FAIL", "DELETE /v1/challenges/{id}", resp.httpStatus, pass ? "Deleted temp challenge" : "Delete returned non-success", resp.json || resp.text);
+          }
+        } else {
+          addRow("INFO", "DELETE /v1/challenges/{id}", null, "Cleanup disabled, challenge kept for inspection");
+        }
+      } else {
+        addRow("SKIP", "GET /v1/challenges/{id}", null, "Skipped because challenge was not created");
+        addRow("SKIP", "GET /v1/challenges/stats/summary", null, "Skipped because challenge was not created");
+        addRow("SKIP", "GET /v1/challenges/stats", null, "Skipped because challenge was not created");
+        addRow("SKIP", "GET /v1/challenges/submission/{challengeId}/{userId}", null, "Skipped because challenge was not created");
+        addRow("SKIP", "DELETE /v1/challenges/{id}", null, "Skipped because challenge was not created");
+      }
+
+      {
+        const body = {
+          type: "listAllChallengeIds",
+          filters: { challengeIds: [], userIds: [] }
+        };
+        const resp = await callApi("POST /v1/reports (listAllChallengeIds)", {
+          url: `https://api.onecompiler.com/v1/reports?access_token=${encodeURIComponent(apiKey)}`,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          addFail("POST /v1/reports (listAllChallengeIds)", resp);
+        } else {
+          const pass = Array.isArray(resp.json) || (resp.json && resp.json.status === "success");
+          const count = Array.isArray(resp.json) ? resp.json.length : null;
+          addRow(pass ? "PASS" : "FAIL", "POST /v1/reports (listAllChallengeIds)", resp.httpStatus, count == null ? "response received" : `records=${count}`, resp.json || resp.text);
+        }
+      }
+
+      {
+        const reportUserIds = state.userId ? [state.userId] : [];
+        const body = {
+          type: "challengesCountByUsers",
+          filters: { challengeIds: [], userIds: reportUserIds }
+        };
+        const resp = await callApi("POST /v1/reports (challengesCountByUsers)", {
+          url: `https://api.onecompiler.com/v1/reports?access_token=${encodeURIComponent(apiKey)}`,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          addFail("POST /v1/reports (challengesCountByUsers)", resp);
+        } else {
+          const pass = Array.isArray(resp.json) || (resp.json && resp.json.status === "success");
+          const filterInfo = reportUserIds.length > 0 ? `userIds=${reportUserIds.length}` : "userIds=0";
+          addRow(pass ? "PASS" : "FAIL", "POST /v1/reports (challengesCountByUsers)", resp.httpStatus, filterInfo, resp.json || resp.text);
+        }
+      }
+
+      {
+        const embedChecks = [
+          checkIframeLoad("Embed Editor default", "https://onecompiler.com/embed/"),
+          checkIframeLoad("Embed Editor python", "https://onecompiler.com/embed/python"),
+          checkIframeLoad("Embed Challenge sample", "https://onecompiler.com/embed/challenges/3w7dby3mt/beginners-coding-challenge"),
+          checkIframeLoad("Embed Studio", "https://onecompiler.com/embed/studio")
+        ];
+
+        const results = await Promise.all(embedChecks);
+        for (const item of results) {
+          addRow(item.status, item.name, item.httpStatus, item.details);
+        }
+      }
+
+      setSummary();
+      runBtn.disabled = false;
+      runBtn.textContent = "Run All Tests";
+    }
+
+    runBtn.addEventListener("click", runTests);
+  </script>
+</body>
+</html>

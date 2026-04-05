@@ -1,6 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap');
 @import "tailwindcss";
 @import "./styles/design-system.css";
+@import "./styles/compiler-lab.css";
 
 @theme {
   --color-primary: #2563EB;

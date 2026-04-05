@@ -109,6 +109,16 @@ export const systemAPI = {
   getDbStatus: () => api.get('/db-status'),
 };
 
+export const compilerAPI = {
+  getLanguages: () => api.get('/compiler/languages'),
+  listChallenges: (params) => api.get('/compiler/challenges', { params }),
+  createChallenge: (payload) => api.post('/compiler/challenges', payload),
+  getChallenge: (challengeId) => api.get(`/compiler/challenges/${challengeId}`),
+  getChallengeStats: (challengeId) => api.get(`/compiler/challenges/${challengeId}/stats`),
+  getChallengeStatsSummary: (challengeId) => api.get(`/compiler/challenges/${challengeId}/stats/summary`),
+  runCode: (payload) => api.post('/compiler/run', payload),
+};
+
 export const assessmentAPI = {
   // Teacher
   getTemplates: () => api.get('/assessments/templates'),

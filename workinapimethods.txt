@@ -1,0 +1,121 @@
+OneCompiler Working API Methods
+Validated on: 2026-04-05
+
+BASE URLS
+- https://api.onecompiler.com
+- https://onecompiler.com
+
+AUTH MODES (IMPORTANT)
+1) Header auth (X-API-Key)
+   - Use for: /v1/run, /v1/users, /v1/users/email
+2) User token auth (X-User-Token)
+   - Use for: /v1/studio/workspaces
+   - Get this token from POST /v1/users response: api.token
+3) Query auth (access_token)
+   - Use for: challenge + reports endpoints
+   - Format: ?access_token=<YOUR_API_KEY>
+
+CONFIRMED WORKING ENDPOINTS
+
+1) GET https://onecompiler.com/api/v1/languages
+   Auth: None
+   Result: PASS (languages_count=81)
+
+2) POST https://api.onecompiler.com/v1/run
+   Auth: Header X-API-Key
+   Content-Type: application/json
+   Supports:
+   - Single stdin execution
+   - Batch stdin execution (stdin as array)
+   - Invalid language returns expected error (E006)
+
+3) POST https://api.onecompiler.com/v1/users
+   Auth: Header X-API-Key
+   Content-Type: application/json
+   Body:
+   {
+     "name": "Your User Name",
+     "email": "user@example.com"
+   }
+   Output includes:
+   - _id
+   - api.token (use as X-User-Token)
+
+4) PUT https://api.onecompiler.com/v1/users/email
+   Auth: Header X-API-Key
+   Content-Type: application/json
+   Body:
+   {
+     "oldEmail": "old@example.com",
+     "newEmail": "new@example.com"
+   }
+
+5) GET https://api.onecompiler.com/v1/studio/templates
+   Auth: None
+   Result: PASS
+
+6) GET https://api.onecompiler.com/v1/studio/workspaces
+   Auth: Header X-User-Token
+   Result: PASS
+
+7) POST https://api.onecompiler.com/v1/challenges/create?access_token=<YOUR_API_KEY>
+   Auth: access_token query
+   Content-Type: application/json
+   Result: PASS
+
+8) GET https://api.onecompiler.com/v1/challenges/<challenge_id>?access_token=<YOUR_API_KEY>
+   Auth: access_token query
+   Result: PASS
+
+9) GET https://api.onecompiler.com/v1/challenges/stats/summary?access_token=<YOUR_API_KEY>&challengeIds=<challenge_id>
+   Auth: access_token query
+   Result: PASS
+
+10) GET https://api.onecompiler.com/v1/challenges/stats?access_token=<YOUR_API_KEY>&challengeIds=<challenge_id>
+    Auth: access_token query
+    Result: PASS
+
+11) GET https://api.onecompiler.com/v1/challenges/submission/<challenge_id>/<user_id>?access_token=<YOUR_API_KEY>
+    Auth: access_token query
+    Result: PASS
+
+12) DELETE https://api.onecompiler.com/v1/challenges/<challenge_id>?access_token=<YOUR_API_KEY>
+    Auth: access_token query
+    Result: PASS
+
+13) POST https://api.onecompiler.com/v1/reports?access_token=<YOUR_API_KEY>
+    Auth: access_token query
+    Content-Type: application/json
+    Working report type:
+    {
+      "type": "listAllChallengeIds",
+      "filters": { "challengeIds": [], "userIds": [] }
+    }
+
+14) POST https://api.onecompiler.com/v1/reports?access_token=<YOUR_API_KEY>
+    Auth: access_token query
+    Content-Type: application/json
+    Report type:
+    {
+      "type": "challengesCountByUsers",
+      "filters": { "challengeIds": [], "userIds": ["<api_owned_user_id>"] }
+    }
+    Note: If userIds are not API-owned, API may return HTTP 500 with:
+    "Error: some users do not belong to this api"
+
+EMBED URLS (CONFIRMED LOADING)
+- https://onecompiler.com/embed/
+- https://onecompiler.com/embed/python
+- https://onecompiler.com/embed/challenges/3w7dby3mt/beginners-coding-challenge
+- https://onecompiler.com/embed/studio
+
+BLOCKED ON CURRENT PLAN
+- POST https://api.onecompiler.com/v1/studio/workspaces
+  Error: E603: Access has not been enabled for your API
+
+RECOMMENDED FOR YOUR SITE BUILD
+- Use /v1/run for code execution
+- Use /v1/users + /v1/users/email for user sync
+- Use challenge APIs for challenge CRUD/stats/submissions
+- Use reports API with API-owned user filters
+- Use embed URLs for editor/challenge/studio embedding

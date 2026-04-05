@@ -24,6 +24,9 @@ import StudentAssessments from './pages/student/Assessments';
 import StudentResults from './pages/student/Results';
 import StudentAssessmentInstructions from './pages/student/AssessmentInstructions';
 import StudentAssessmentAttempt from './pages/student/AssessmentAttempt';
+import ChallengeCreator from './pages/compiler/ChallengeCreator';
+import ChallengeBrowser from './pages/compiler/ChallengeBrowser';
+import ChallengeRunner from './pages/compiler/ChallengeRunner';
 import UnderDevelopment from './pages/UnderDevelopment';
 
 function App() {
@@ -205,6 +208,31 @@ function App() {
             }
           />
 
+          <Route
+            path="/compiler/challenges"
+            element={
+              <ChallengeBrowser />
+            }
+          />
+          <Route
+            path="/compiler/challenges/new"
+            element={
+              <ChallengeCreator />
+            }
+          />
+          <Route
+            path="/compiler/challenges/run"
+            element={
+              <ChallengeRunner />
+            }
+          />
+          <Route
+            path="/compiler/challenges/run/:challengeId"
+            element={
+              <ChallengeRunner />
+            }
+          />
+
           {/* Student Routes */}
           <Route 
             path="/student" 
@@ -256,8 +284,8 @@ function App() {
           />
 
           {/* Default redirect */}
-          <Route path="/" element={<Navigate to="/login" replace />} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
+          <Route path="/" element={<Navigate to="/compiler/challenges" replace />} />
+          <Route path="*" element={<Navigate to="/compiler/challenges" replace />} />
         </Routes>
       </BrowserRouter>
       

@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { getRoleBadgeClass } from '../utils/uiTheme';
 import { 
   FiHome, FiUsers, FiSettings, FiLogOut, FiMenu, FiX,
-  FiBook, FiClipboard, FiBarChart2, FiUser, FiChevronRight, FiChevronLeft, FiActivity, FiDatabase
+  FiBook, FiClipboard, FiBarChart2, FiUser, FiChevronRight, FiChevronLeft, FiActivity, FiDatabase, FiCode, FiTerminal
 } from 'react-icons/fi';
 
 const Layout = ({ children }) => {
@@ -38,6 +38,8 @@ const Layout = ({ children }) => {
         { name: 'Students', path: '/admin/students', icon: FiUsers },
         { name: 'Teachers', path: '/admin/teachers', icon: FiUser },
         { name: 'Classes', path: '/admin/classes', icon: FiBook },
+        { name: 'Create Challenges', path: '/compiler/challenges/new', icon: FiCode },
+        { name: 'Run Compiler Lab', path: '/compiler/challenges/run', icon: FiTerminal },
         { name: 'Analytics', path: '/admin/analytics', icon: FiBarChart2 },
         { name: 'Settings', path: '/admin/settings', icon: FiSettings },
       ],
@@ -46,12 +48,15 @@ const Layout = ({ children }) => {
         { name: 'My Students', path: '/teacher/students', icon: FiUsers },
         { name: 'My Classes', path: '/teacher/classes', icon: FiBook },
         { name: 'Question Bank', path: '/teacher/assessments/templates', icon: FiClipboard },
+        { name: 'Create Challenges', path: '/compiler/challenges/new', icon: FiCode },
+        { name: 'Run Compiler Lab', path: '/compiler/challenges/run', icon: FiTerminal },
         { name: 'Schedule Exams', path: '/teacher/assessments/host', icon: FiActivity },
         { name: 'Analytics', path: '/teacher/analytics', icon: FiBarChart2 },
       ],
       student: [
         { name: 'Dashboard', path: '/student', icon: FiHome },
         { name: 'Assessments', path: '/student/assessments', icon: FiClipboard },
+        { name: 'Challenge Runner', path: '/compiler/challenges/run', icon: FiTerminal },
         { name: 'Results', path: '/student/results', icon: FiBarChart2 },
         { name: 'Profile', path: '/student/profile', icon: FiUser },
       ],
@@ -103,6 +108,10 @@ const Layout = ({ children }) => {
 
     if (path.includes('assessments')) {
       return 'bg-cyan-50 text-cyan-600 group-hover:bg-cyan-100 group-hover:text-cyan-700';
+    }
+
+    if (path.includes('/compiler/')) {
+      return 'bg-orange-50 text-orange-600 group-hover:bg-orange-100 group-hover:text-orange-700';
     }
 
     return 'bg-gray-100 text-gray-500 group-hover:bg-gray-200 group-hover:text-gray-700';
