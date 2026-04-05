@@ -189,10 +189,10 @@ const ChallengeRunner = () => {
   const [testPanelView, setTestPanelView] = useState('testcase');
   const [attemptedQuestionIndexes, setAttemptedQuestionIndexes] = useState([]);
 
-  const [leftPanePercent, setLeftPanePercent] = useState(36);
+  const [leftPanePercent, setLeftPanePercent] = useState(() => (isEmbeddedMode ? 46 : 36));
   const [isResizing, setIsResizing] = useState(false);
   const [editorTheme, setEditorTheme] = useState('vs-dark');
-  const [isEditorExpanded, setIsEditorExpanded] = useState(false);
+  const [isEditorExpanded, setIsEditorExpanded] = useState(() => isEmbeddedMode);
   const [showQuestionPalette, setShowQuestionPalette] = useState(false);
 
   const layoutRef = useRef(null);
@@ -352,7 +352,9 @@ const ChallengeRunner = () => {
       }
 
       const relative = ((event.clientX - rect.left) / rect.width) * 100;
-      setLeftPanePercent(clamp(relative, 24, 58));
+      const minLeft = isEmbeddedMode ? 30 : 24;
+      const maxLeft = isEmbeddedMode ? 66 : 58;
+      setLeftPanePercent(clamp(relative, minLeft, maxLeft));
     };
 
     const stopResize = () => setIsResizing(false);
@@ -364,7 +366,7 @@ const ChallengeRunner = () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', stopResize);
     };
-  }, [isResizing]);
+  }, [isResizing, isEmbeddedMode]);
 
   const fileName = useMemo(() => {
     const extension = languageMap[language]?.extension || 'txt';

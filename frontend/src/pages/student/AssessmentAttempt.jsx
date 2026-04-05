@@ -553,19 +553,6 @@ const AssessmentAttempt = () => {
     toast.success('Coding challenge marked as attempted');
   };
 
-  const updateCurrentCodingNote = (value) => {
-    if (!currentCodingChallengeId) return;
-
-    setCodingSubmissions((prev) => ({
-      ...prev,
-      [currentCodingChallengeId]: {
-        ...(prev[currentCodingChallengeId] || {}),
-        challengeId: currentCodingChallengeId,
-        note: value
-      }
-    }));
-  };
-
   const reEnterFullscreen = async () => {
     try {
       await document.documentElement.requestFullscreen();
@@ -790,6 +777,44 @@ const AssessmentAttempt = () => {
                 Coding attempted: {codingAttemptedCount}/{codingChallengeIds.length}
               </span>
             </div>
+
+            {currentSection === 'coding' && codingChallengeIds.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+                {codingChallengeIds.map((challengeId, index) => {
+                  const attempted = Boolean(codingSubmissions?.[challengeId]?.attempted);
+
+                  return (
+                    <button
+                      key={challengeId}
+                      type="button"
+                      onClick={() => setSelectedCodingChallengeIndex(index)}
+                      className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                        index === selectedCodingChallengeIndex
+                          ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
+                          : attempted
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      Challenge {index + 1}{attempted ? ' • Attempted' : ''}
+                    </button>
+                  );
+                })}
+
+                <div className="ml-auto flex items-center gap-2">
+                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                    ID: {currentCodingChallengeId || 'N/A'}
+                  </span>
+                  <Button
+                    variant="secondary"
+                    onClick={markCurrentCodingChallengeAttempted}
+                    disabled={!currentCodingChallengeId}
+                  >
+                    Mark Attempted
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -952,92 +977,19 @@ const AssessmentAttempt = () => {
         ) : (
           <>
             <div className="grid min-h-[calc(100vh-190px)] grid-cols-1 gap-3">
-              <Card>
-                <Card.Header>
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h2 className="section-title text-base">Coding Challenges</h2>
-                    <span className="text-xs text-slate-500">Attempted {codingAttemptedCount}/{codingChallengeIds.length}</span>
-                  </div>
-                </Card.Header>
-                <Card.Body>
-                  <div className="flex flex-wrap gap-2">
-                    {codingChallengeIds.map((challengeId, index) => {
-                      const attempted = Boolean(codingSubmissions?.[challengeId]?.attempted);
-
-                      return (
-                        <button
-                          key={challengeId}
-                          type="button"
-                          onClick={() => setSelectedCodingChallengeIndex(index)}
-                          className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-                            index === selectedCodingChallengeIndex
-                              ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
-                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                          }`}
-                        >
-                          Challenge {index + 1}{attempted ? ' • Attempted' : ''}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </Card.Body>
-              </Card>
-
-              <Card className="flex min-h-[62vh] flex-col overflow-hidden">
-                <Card.Header>
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-sm font-semibold text-slate-800">Challenge ID: {currentCodingChallengeId || 'N/A'}</h3>
-                    <Button
-                      variant="secondary"
-                      onClick={markCurrentCodingChallengeAttempted}
-                      disabled={!currentCodingChallengeId}
-                    >
-                      Mark Attempted
-                    </Button>
-                  </div>
-                </Card.Header>
-                <Card.Body className="flex-1 space-y-3 overflow-hidden">
+              <Card className="flex min-h-[72vh] flex-col overflow-hidden">
+                <Card.Body className="flex-1 overflow-hidden p-2 lg:p-3">
                   {currentCodingChallengeId ? (
-                    <>
-                      <iframe
-                        title={`coding-challenge-${currentCodingChallengeId}`}
-                        src={`/compiler/challenges/run/${encodeURIComponent(currentCodingChallengeId)}?embedded=1`}
-                        className="h-[56vh] w-full rounded-xl border border-slate-200"
-                      />
-
-                      <div>
-                        <label className="form-label">Coding Notes (optional)</label>
-                        <textarea
-                          className="form-input min-h-24"
-                          value={String(codingSubmissions?.[currentCodingChallengeId]?.note || '')}
-                          onChange={(event) => updateCurrentCodingNote(event.target.value)}
-                          placeholder="Write short notes about your approach or edge cases"
-                        />
-                      </div>
-                    </>
+                    <iframe
+                      title={`coding-challenge-${currentCodingChallengeId}`}
+                      src={`/compiler/challenges/run/${encodeURIComponent(currentCodingChallengeId)}?embedded=1`}
+                      className="h-[75vh] min-h-[560px] w-full rounded-xl border border-slate-200"
+                    />
                   ) : (
-                    <p className="text-sm text-slate-500">No coding challenge available for this exam.</p>
+                    <p className="p-2 text-sm text-slate-500">No coding challenge available for this exam.</p>
                   )}
                 </Card.Body>
               </Card>
-            </div>
-
-            <div className="fixed bottom-3 left-2 right-2 z-30 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur sm:left-3 sm:right-3 lg:left-4 lg:right-4">
-              <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                <div className="flex items-center gap-2 text-xs text-slate-600">
-                  <FiShield className="h-4 w-4 text-blue-600" />
-                  <span>Complete coding tasks, then finalize your full assessment.</span>
-                </div>
-                <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-                  <Button variant="secondary" onClick={() => setCurrentSection('mcq')}>
-                    Back to MCQ
-                  </Button>
-                  <Button onClick={() => setShowSubmitModal(true)} disabled={submitting}>
-                    <FiCheckCircle className="h-4 w-4" />
-                    {submitting ? 'Submitting...' : 'Finalize & Submit'}
-                  </Button>
-                </div>
-              </div>
             </div>
           </>
         )}
