@@ -141,6 +141,7 @@ const compilerVersionByLanguage = {
 const toastIds = {
   challengeLoaded: 'challenge-loaded',
   challengeLoadFailed: 'challenge-load-failed',
+  compileVerdict: 'compile-verdict',
   submitVerdict: 'submit-verdict'
 };
 
@@ -164,7 +165,7 @@ const ChallengeRunner = () => {
 
   const [selectedProblemIndex, setSelectedProblemIndex] = useState(0);
   const [language, setLanguage] = useState('python');
-  const [codeByLanguage, setCodeByLanguage] = useState({ ...DEFAULT_CODE_BY_LANGUAGE });
+  const [codeByQuestionLanguage, setCodeByQuestionLanguage] = useState({});
 
   const [runningCompile, setRunningCompile] = useState(false);
   const [compileState, setCompileState] = useState('idle');
@@ -291,8 +292,9 @@ const ChallengeRunner = () => {
     [evaluatedTestCaseResults]
   );
   const hasSubmitted = evaluatedTestCaseResults.length > 0;
+  const hasAnyTestCaseResult = testCaseResults.length > 0;
   const allPassed = hasSubmitted && failCount === 0;
-  const isTestPanelUnlocked = compileState === 'success' || hasSubmitted;
+  const isTestPanelUnlocked = hasAnyTestCaseResult;
 
   useEffect(() => {
     if (supportedLanguages.length === 0) {
@@ -364,7 +366,22 @@ const ChallengeRunner = () => {
     return `main.${extension}`;
   }, [language]);
 
-  const activeCode = codeByLanguage[language] || DEFAULT_CODE_BY_LANGUAGE[language] || '';
+  const challengeStorageKey = useMemo(() => {
+    const fromPayload = toStringValue(challengeMeta.id);
+    const fromRoute = toStringValue(initialChallengeId);
+    return fromPayload || fromRoute || 'challenge';
+  }, [challengeMeta.id, initialChallengeId]);
+
+  const currentQuestionStorageKey = useMemo(() => {
+    if (!currentProblem) {
+      return `q-${selectedProblemIndex}`;
+    }
+
+    return toStringValue(currentProblem._id || currentProblem.id || currentProblem.link || `q-${selectedProblemIndex}`);
+  }, [currentProblem, selectedProblemIndex]);
+
+  const activeCodeKey = `${challengeStorageKey}::${currentQuestionStorageKey}::${language}`;
+  const activeCode = codeByQuestionLanguage[activeCodeKey] || DEFAULT_CODE_BY_LANGUAGE[language] || '';
   const activeCompilerLabel = compilerVersionByLanguage[language] || (languageMap[language]?.label || language);
 
   const handleEditorUndo = () => {
@@ -424,6 +441,7 @@ const ChallengeRunner = () => {
       const payload = response.data;
       setChallengeData(payload);
       setSelectedProblemIndex(0);
+      setCodeByQuestionLanguage({});
       setTestCaseResults([]);
       setSelectedTestCaseId(null);
       setTestPanelView('testcase');
@@ -440,6 +458,7 @@ const ChallengeRunner = () => {
       const message = error.response?.data?.error || 'Failed to load challenge';
       setChallengeError(message);
       setChallengeData(null);
+      setCodeByQuestionLanguage({});
       setAttemptedQuestionIndexes([]);
       toast.error(message, { id: `${toastIds.challengeLoadFailed}-${challengeId || 'unknown'}` });
     }
@@ -559,7 +578,18 @@ const ChallengeRunner = () => {
         setCompileErrorDetails('');
         setTestCaseError('');
         setTestCaseResults(mappedResults);
-        toast.success('Compiled successfully');
+        setTestPanelView('result');
+
+        const consideredResults = sampleCase
+          ? mappedResults.filter((entry) => entry.testCase.id !== sampleCase.id)
+          : mappedResults;
+        const passed = consideredResults.filter((entry) => entry.passed).length;
+
+        if (consideredResults.length === 0 || passed === consideredResults.length) {
+          toast.success('Compiled. All test cases passed.', { id: toastIds.compileVerdict });
+        } else {
+          toast.error('Compiled, but some test cases failed.', { id: toastIds.compileVerdict });
+        }
       }
 
       smoothScrollTo(submissionResultRef);
@@ -858,9 +888,9 @@ const ChallengeRunner = () => {
                       editorRef.current = editorInstance;
                     }}
                     onChange={(value) => {
-                      setCodeByLanguage((prev) => ({
+                      setCodeByQuestionLanguage((prev) => ({
                         ...prev,
-                        [language]: toStringValue(value)
+                        [activeCodeKey]: toStringValue(value)
                       }));
                     }}
                     options={{

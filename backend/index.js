@@ -17,32 +17,63 @@ const compilerRoutes = require('./routes/compiler');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+const parseCsvEnv = (value) => String(value || '')
+  .split(',')
+  .map((entry) => entry.trim())
+  .filter(Boolean);
+
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const wildcardPatternToRegex = (pattern) => {
+  const escapedPattern = escapeRegex(pattern);
+  const regexSource = `^${escapedPattern.replace(/\\\*/g, '.*')}$`;
+  return new RegExp(regexSource, 'i');
+};
+
 const defaultAllowedOrigins = [
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'https://lms-2026-pi.vercel.app'
 ];
 
-const allowedOrigins = (
-  process.env.FRONTEND_URLS || process.env.FRONTEND_URL || ''
-)
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const defaultAllowedOriginPatterns = [
+  /^https:\/\/lms-2026-[a-z0-9-]+\.vercel\.app$/i
+];
+
+const allowedOrigins = parseCsvEnv(process.env.FRONTEND_URLS || process.env.FRONTEND_URL);
+const allowedOriginPatternInputs = parseCsvEnv(process.env.FRONTEND_URL_PATTERNS);
+const allowedOriginPatterns = allowedOriginPatternInputs.map(wildcardPatternToRegex);
 
 const corsOriginAllowList = allowedOrigins.length > 0
   ? allowedOrigins
   : defaultAllowedOrigins;
 
+const corsOriginPatternAllowList = allowedOriginPatterns.length > 0
+  ? allowedOriginPatterns
+  : defaultAllowedOriginPatterns;
+
+const isOriginAllowed = (origin) => {
+  if (!origin) {
+    return true;
+  }
+
+  if (corsOriginAllowList.includes(origin)) {
+    return true;
+  }
+
+  return corsOriginPatternAllowList.some((pattern) => pattern.test(origin));
+};
+
 // CORS configuration for cookies
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || corsOriginAllowList.includes(origin)) {
+    if (isOriginAllowed(origin)) {
       callback(null, true);
       return;
     }
 
-    callback(new Error(`CORS blocked for origin: ${origin}`));
+    console.warn(`CORS blocked for origin: ${origin}`);
+    callback(null, false);
   },
   credentials: true, // Allow cookies to be sent
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
