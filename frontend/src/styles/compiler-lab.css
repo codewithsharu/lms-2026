@@ -129,6 +129,16 @@
   overflow: auto;
 }
 
+.runner-pane-freeflow {
+  max-height: none;
+  overflow: visible;
+}
+
+.runner-question-pane.embedded-freeflow {
+  min-height: auto;
+  overflow: visible;
+}
+
 .runner-layout.resizing,
 .runner-layout.resizing * {
   cursor: col-resize !important;
@@ -1542,6 +1552,11 @@
 
   .runner-pane-scroll {
     max-height: none;
+  }
+
+  .runner-pane-freeflow {
+    max-height: none;
+    overflow: visible;
   }
 
   .runner-io-grid {

@@ -983,7 +983,7 @@ const AssessmentAttempt = () => {
                     <iframe
                       title={`coding-challenge-${currentCodingChallengeId}`}
                       src={`/compiler/challenges/run/${encodeURIComponent(currentCodingChallengeId)}?embedded=1`}
-                      className="h-[75vh] min-h-[560px] w-full rounded-xl border border-slate-200"
+                      className="h-[82vh] min-h-[640px] w-full rounded-xl border border-slate-200"
                     />
                   ) : (
                     <p className="p-2 text-sm text-slate-500">No coding challenge available for this exam.</p>

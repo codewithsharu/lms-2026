@@ -189,7 +189,7 @@ const ChallengeRunner = () => {
   const [testPanelView, setTestPanelView] = useState('testcase');
   const [attemptedQuestionIndexes, setAttemptedQuestionIndexes] = useState([]);
 
-  const [leftPanePercent, setLeftPanePercent] = useState(() => (isEmbeddedMode ? 46 : 36));
+  const [leftPanePercent, setLeftPanePercent] = useState(() => (isEmbeddedMode ? 56 : 36));
   const [isResizing, setIsResizing] = useState(false);
   const [editorTheme, setEditorTheme] = useState('vs-dark');
   const [isEditorExpanded, setIsEditorExpanded] = useState(() => isEmbeddedMode);
@@ -352,8 +352,8 @@ const ChallengeRunner = () => {
       }
 
       const relative = ((event.clientX - rect.left) / rect.width) * 100;
-      const minLeft = isEmbeddedMode ? 30 : 24;
-      const maxLeft = isEmbeddedMode ? 66 : 58;
+      const minLeft = isEmbeddedMode ? 36 : 24;
+      const maxLeft = isEmbeddedMode ? 78 : 58;
       setLeftPanePercent(clamp(relative, minLeft, maxLeft));
     };
 
@@ -712,7 +712,7 @@ const ChallengeRunner = () => {
           ref={layoutRef}
           style={{ '--runner-left': `${leftPanePercent}%` }}
         >
-          <section className="compiler-card runner-pane">
+          <section className={`compiler-card runner-pane runner-question-pane ${isEmbeddedMode ? 'embedded-freeflow' : ''}`}>
             <div className="compiler-panel-head">
               <div>
                 <h2 className="section-title">Problem Statement</h2>
@@ -720,7 +720,7 @@ const ChallengeRunner = () => {
               </div>
             </div>
 
-            <div className="compiler-panel-body runner-pane-scroll">
+            <div className={`compiler-panel-body ${isEmbeddedMode ? 'runner-pane-freeflow' : 'runner-pane-scroll'}`}>
               {problems.length > 0 ? (
                 <>
                   <div className="runner-question-meta">
