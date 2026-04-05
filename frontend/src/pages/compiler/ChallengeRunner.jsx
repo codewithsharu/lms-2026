@@ -189,7 +189,7 @@ const ChallengeRunner = () => {
   const [testPanelView, setTestPanelView] = useState('testcase');
   const [attemptedQuestionIndexes, setAttemptedQuestionIndexes] = useState([]);
 
-  const [leftPanePercent, setLeftPanePercent] = useState(() => (isEmbeddedMode ? 56 : 36));
+  const [leftPanePercent, setLeftPanePercent] = useState(() => (isEmbeddedMode ? 50 : 36));
   const [isResizing, setIsResizing] = useState(false);
   const [editorTheme, setEditorTheme] = useState('vs-dark');
   const [isEditorExpanded, setIsEditorExpanded] = useState(() => isEmbeddedMode);
