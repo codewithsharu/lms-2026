@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { getRoleBadgeClass } from '../utils/uiTheme';
 import { 
   FiHome, FiUsers, FiSettings, FiLogOut, FiMenu, FiX,
-  FiBook, FiClipboard, FiBarChart2, FiUser, FiChevronRight, FiChevronLeft, FiActivity, FiDatabase, FiTerminal
+  FiBook, FiClipboard, FiBarChart2, FiUser, FiChevronRight, FiChevronLeft, FiActivity, FiDatabase, FiTerminal, FiMonitor
 } from 'react-icons/fi';
 
 const Layout = ({ children }) => {
@@ -48,6 +48,7 @@ const Layout = ({ children }) => {
         { name: 'Question Bank', path: '/teacher/assessments/templates', icon: FiClipboard },
         { name: 'Challenges', path: '/teacher/compiler/challenges', icon: FiTerminal },
         { name: 'Schedule Exams', path: '/teacher/assessments/host', icon: FiActivity },
+        { name: 'Exam Preview Lab', path: '/teacher/assessments/preview-lab', icon: FiMonitor },
         { name: 'Analytics', path: '/teacher/analytics', icon: FiBarChart2 },
       ],
       student: [

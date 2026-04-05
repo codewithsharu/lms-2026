@@ -139,6 +139,37 @@
   overflow: visible;
 }
 
+.embedded-runner-main {
+  gap: 8px;
+}
+
+.embedded-runner .runner-layout {
+  gap: 4px;
+}
+
+.embedded-runner .runner-pane {
+  min-height: auto;
+  overflow: visible;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.embedded-runner .runner-splitter {
+  min-height: auto;
+}
+
+.embedded-runner .compiler-panel-head {
+  padding: 0 0 8px;
+  border-bottom: none;
+  background: transparent;
+}
+
+.embedded-runner .compiler-panel-body {
+  padding: 0;
+}
+
 .runner-layout.resizing,
 .runner-layout.resizing * {
   cursor: col-resize !important;
@@ -401,9 +432,7 @@
 }
 
 .runner-editor-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+  position: static;
 }
 
 .runner-editor-controls {

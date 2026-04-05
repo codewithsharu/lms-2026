@@ -146,6 +146,8 @@ const toastIds = {
   submitVerdict: 'submit-verdict'
 };
 
+const EMBEDDED_CODING_PROGRESS_EVENT = 'challengeRunnerProgress';
+
 const smoothScrollTo = (ref) => {
   if (!ref?.current) {
     return;
@@ -192,7 +194,7 @@ const ChallengeRunner = () => {
   const [leftPanePercent, setLeftPanePercent] = useState(() => (isEmbeddedMode ? 50 : 36));
   const [isResizing, setIsResizing] = useState(false);
   const [editorTheme, setEditorTheme] = useState('vs-dark');
-  const [isEditorExpanded, setIsEditorExpanded] = useState(() => isEmbeddedMode);
+  const [isEditorExpanded, setIsEditorExpanded] = useState(false);
   const [showQuestionPalette, setShowQuestionPalette] = useState(false);
 
   const layoutRef = useRef(null);
@@ -221,6 +223,41 @@ const ChallengeRunner = () => {
   const currentQuestionNumber = problems.length > 0 ? selectedProblemIndex + 1 : 0;
   const attemptedCount = attemptedQuestionIndexes.length;
   const isAttemptedComplete = problems.length > 0 && attemptedCount === problems.length;
+
+  useEffect(() => {
+    if (!isEmbeddedMode) {
+      return;
+    }
+
+    if (!window.parent || window.parent === window) {
+      return;
+    }
+
+    const challengeId = toStringValue(challengeMeta.id || initialChallengeId);
+    if (!challengeId) {
+      return;
+    }
+
+    const normalizedIndexes = Array.from(
+      new Set(
+        (Array.isArray(attemptedQuestionIndexes) ? attemptedQuestionIndexes : [])
+          .map((entry) => Number.parseInt(String(entry), 10))
+          .filter((entry) => Number.isInteger(entry) && entry >= 0)
+      )
+    ).sort((left, right) => left - right);
+
+    window.parent.postMessage(
+      {
+        type: EMBEDDED_CODING_PROGRESS_EVENT,
+        source: 'challenge-runner',
+        challengeId,
+        attemptedQuestionIndexes: normalizedIndexes,
+        attemptedQuestionCount: normalizedIndexes.length,
+        totalQuestionCount: problems.length
+      },
+      window.location.origin
+    );
+  }, [isEmbeddedMode, challengeMeta.id, initialChallengeId, attemptedQuestionIndexes, problems.length]);
 
   const currentQuestionStatement = useMemo(() => {
     if (!currentProblem) return '';
@@ -689,7 +726,7 @@ const ChallengeRunner = () => {
   };
 
   return (
-    <div className={usePortalPresentation ? 'portal-compiler' : 'compiler-shell'}>
+    <div className={`${usePortalPresentation ? 'portal-compiler' : 'compiler-shell'}${isEmbeddedMode ? ' embedded-runner' : ''}`}>
       {!usePortalPresentation && (
         <CompilerTopBar
           title="Exam Runner"
@@ -704,7 +741,7 @@ const ChallengeRunner = () => {
         </div>
       )}
 
-      <main className={usePortalPresentation ? 'app-page' : 'compiler-main compiler-main-wide app-page'}>
+      <main className={usePortalPresentation ? `app-page${isEmbeddedMode ? ' embedded-runner-main' : ''}` : 'compiler-main compiler-main-wide app-page'}>
         {challengeError && <Alert className="mb-3">{challengeError}</Alert>}
 
         <div
@@ -716,7 +753,7 @@ const ChallengeRunner = () => {
             <div className="compiler-panel-head">
               <div>
                 <h2 className="section-title">Problem Statement</h2>
-                <p className="body-sm mt-1">Use the splitter to resize this pane when the question is long.</p>
+                {!isEmbeddedMode && <p className="body-sm mt-1">Use the splitter to resize this pane when the question is long.</p>}
               </div>
             </div>
 
@@ -816,16 +853,20 @@ const ChallengeRunner = () => {
                       <FiGrid className="h-4 w-4" />
                     </button>
 
-                    <p className={`runner-question-nav-progress ${isAttemptedComplete ? 'is-complete' : 'is-incomplete'}`}>
-                      Attempted: {attemptedCount}/{problems.length}
-                    </p>
+                    {!isEmbeddedMode && (
+                      <>
+                        <p className={`runner-question-nav-progress ${isAttemptedComplete ? 'is-complete' : 'is-incomplete'}`}>
+                          Attempted: {attemptedCount}/{problems.length}
+                        </p>
 
-                    <button
-                      type="button"
-                      className="runner-question-nav-finish"
-                    >
-                      Finish test
-                    </button>
+                        <button
+                          type="button"
+                          className="runner-question-nav-finish"
+                        >
+                          Finish test
+                        </button>
+                      </>
+                    )}
                   </div>
 
                   {showQuestionPalette && (

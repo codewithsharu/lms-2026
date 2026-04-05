@@ -19,6 +19,7 @@ import TeacherAssessmentTemplates from './pages/teacher/AssessmentTemplates';
 import TeacherAssessmentTemplateBuilder from './pages/teacher/AssessmentTemplateBuilder';
 import TeacherHostExams from './pages/teacher/HostExams';
 import TeacherHostExamCreate from './pages/teacher/HostExamCreate';
+import TeacherExamPreviewLab from './pages/teacher/ExamPreviewLab';
 import TeacherChallengeBrowser from './pages/teacher/ChallengeBrowser';
 import TeacherChallengeBuilder from './pages/teacher/ChallengeBuilder';
 import TeacherChallengeRunner from './pages/teacher/ChallengeRunner';
@@ -197,6 +198,22 @@ function App() {
             element={
               <ProtectedRoute allowedRoles={['teacher']}>
                 <TeacherHostExamCreate />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/teacher/assessments/preview-lab"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <TeacherExamPreviewLab />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/teacher/assessments/preview-lab/run/:attemptId"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <StudentAssessmentAttempt />
               </ProtectedRoute>
             }
           />

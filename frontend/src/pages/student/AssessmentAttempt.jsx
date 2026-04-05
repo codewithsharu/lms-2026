@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { FiAlertTriangle, FiCheckCircle, FiClock, FiCode, FiFlag, FiLock, FiSend, FiShield, FiTarget } from 'react-icons/fi';
+import { FiAlertTriangle, FiCheckCircle, FiClock, FiCode, FiEye, FiEyeOff, FiFlag, FiLock, FiSend, FiShield, FiTarget, FiWifi, FiWifiOff } from 'react-icons/fi';
 import Button from '../../components/ui/Button';
 import Card from '../../components/ui/Card';
 import Modal from '../../components/ui/Modal';
-import { assessmentAPI } from '../../services/api';
+import { assessmentAPI, compilerAPI } from '../../services/api';
 import { getExamSessionToken } from '../../utils/examSession';
 
 const formatTimer = (seconds) => {
@@ -41,10 +41,228 @@ const hasAnswerValue = (question, value) => {
   return Number.isInteger(value);
 };
 
+const stripDuplicateQuestionPrefix = (questionText, questionNumber) => {
+  const text = String(questionText || '').trim();
+
+  if (!text) {
+    return '';
+  }
+
+  const prefixPattern = new RegExp(`^(?:question|q)\\s*${questionNumber}\\s*[:.)-]?\\s*`, 'i');
+  return text.replace(prefixPattern, '').trim();
+};
+
+const clampNumber = (value, min, max, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, parsed));
+};
+
+const parseBooleanFlag = (value) => {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
+};
+
+const parseChallengeIds = (value) => {
+  return String(value || '')
+    .split(',')
+    .map((token) => token.trim())
+    .filter(Boolean);
+};
+
+const extractChallengeQuestionCount = (payload) => {
+  if (Array.isArray(payload?.problems)) {
+    return payload.problems.length;
+  }
+
+  if (Array.isArray(payload?.challenge?.problems)) {
+    return payload.challenge.problems.length;
+  }
+
+  return 0;
+};
+
+const EMBEDDED_CODING_PROGRESS_EVENT = 'challengeRunnerProgress';
+
+const toNonNegativeInteger = (value, fallback = 0) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+
+  return parsed;
+};
+
+const normalizeAttemptedQuestionIndexes = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .map((entry) => toNonNegativeInteger(entry, -1))
+        .filter((entry) => entry >= 0)
+    )
+  ).sort((left, right) => left - right);
+};
+
+const getCodingSubmissionAttemptedCount = (submission) => {
+  if (!submission || typeof submission !== 'object') {
+    return 0;
+  }
+
+  if (Array.isArray(submission.attemptedQuestionIndexes)) {
+    return normalizeAttemptedQuestionIndexes(submission.attemptedQuestionIndexes).length;
+  }
+
+  const explicitCount = toNonNegativeInteger(submission.attemptedQuestionCount, -1);
+  if (explicitCount >= 0) {
+    return explicitCount;
+  }
+
+  return submission.attempted ? 1 : 0;
+};
+
+const getCodingSubmissionTotalCount = (submission) => {
+  if (!submission || typeof submission !== 'object') {
+    return 0;
+  }
+
+  const explicitTotal = toNonNegativeInteger(
+    submission.totalQuestionCount ?? submission.totalQuestions,
+    -1
+  );
+
+  if (explicitTotal >= 0) {
+    return explicitTotal;
+  }
+
+  return 0;
+};
+
+const buildPreviewQuestions = (count = 20) => {
+  const safeCount = clampNumber(count, 1, 120, 20);
+
+  return Array.from({ length: safeCount }, (_, index) => {
+    const questionNumber = index + 1;
+
+    if (questionNumber % 5 === 0) {
+      return {
+        index: questionNumber,
+        type: 'blank',
+        answerMode: 'single',
+        question: `Question ${questionNumber}: Write one key edge case you would validate for this problem.`
+      };
+    }
+
+    if (questionNumber % 4 === 0) {
+      return {
+        index: questionNumber,
+        type: 'mcq',
+        answerMode: 'multiple',
+        question: `Question ${questionNumber}: Select all valid practices for exam coding submissions.`,
+        options: [
+          'Validate input constraints before coding',
+          'Skip sample tests to save time',
+          'Use meaningful variable names',
+          'Never review corner cases'
+        ]
+      };
+    }
+
+    return {
+      index: questionNumber,
+      type: 'mcq',
+      answerMode: 'single',
+      question: `Question ${questionNumber}: Which approach is best for solving the given problem efficiently?`,
+      options: [
+        'Brute force for all input sizes',
+        'Choose algorithm based on constraints',
+        'Avoid handling edge cases',
+        'Hard-code output for samples'
+      ]
+    };
+  });
+};
+
+const buildPreviewAttemptPayload = ({
+  mcqCount,
+  timerMinutes,
+  enableCoding,
+  challengeIds,
+  startSection
+}) => {
+  const questions = buildPreviewQuestions(mcqCount);
+  const startedAt = new Date().toISOString();
+  const startInCoding = enableCoding && startSection === 'coding';
+
+  return {
+    attempt: {
+      id: 'preview-attempt',
+      attempt_number: 1,
+      status: 'in_progress',
+      remaining_seconds: clampNumber(timerMinutes, 5, 300, 60) * 60,
+      answers: {
+        __sectionMeta: {
+          currentSection: startInCoding ? 'coding' : 'mcq',
+          mcqCompletedAt: startInCoding ? startedAt : null,
+          codingEnteredAt: startInCoding ? startedAt : null
+        },
+        __uiSavedResponses: {},
+        __uiMarkedForReview: {},
+        __codingSubmissions: {}
+      },
+      current_section: startInCoding ? 'coding' : 'mcq',
+      section_completion_order: {
+        mcq_completed_at: startInCoding ? startedAt : null,
+        coding_entered_at: startInCoding ? startedAt : null
+      }
+    },
+    hostedAssessment: {
+      title: 'Assessment',
+      subject: 'General Subject',
+      result_mode: 'after_end',
+      coding_section: {
+        enabled: Boolean(enableCoding),
+        unlocked: Boolean(enableCoding),
+        challenge_ids: enableCoding ? challengeIds : []
+      }
+    },
+    questions
+  };
+};
+
 const AssessmentAttempt = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { attemptId } = useParams();
+
+  const previewConfig = useMemo(() => {
+    const searchParams = new URLSearchParams(location.search);
+    const previewFromPath = location.pathname.includes('/preview-lab/run');
+    const previewFromQuery = parseBooleanFlag(searchParams.get('preview'));
+    const enabled = previewFromPath || previewFromQuery;
+    const requestedCoding = parseBooleanFlag(searchParams.get('coding'));
+    const challengeIds = parseChallengeIds(searchParams.get('challenges'));
+    const enableCoding = requestedCoding && challengeIds.length > 0;
+    const requestedStart = String(searchParams.get('start') || 'mcq').toLowerCase();
+
+    return {
+      enabled,
+      mcqCount: clampNumber(searchParams.get('mcq'), 1, 120, 20),
+      timerMinutes: clampNumber(searchParams.get('timer'), 5, 300, 60),
+      enableCoding,
+      challengeIds,
+      startSection: enableCoding && requestedStart === 'coding' ? 'coding' : 'mcq'
+    };
+  }, [location.pathname, location.search]);
+
+  const isPreviewMode = previewConfig.enabled;
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -65,13 +283,19 @@ const AssessmentAttempt = () => {
   const [currentSection, setCurrentSection] = useState('mcq');
   const [sectionCompletionOrder, setSectionCompletionOrder] = useState({});
   const [codingSubmissions, setCodingSubmissions] = useState({});
+  const [codingQuestionTotalByChallenge, setCodingQuestionTotalByChallenge] = useState({});
   const [selectedCodingChallengeIndex, setSelectedCodingChallengeIndex] = useState(0);
   const [switchingToCoding, setSwitchingToCoding] = useState(false);
+  const [showMcqQuestionPanel, setShowMcqQuestionPanel] = useState(true);
+  const [codingFrameHeight, setCodingFrameHeight] = useState(0);
+  const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
 
   const hasAutoSubmittedRef = useRef(false);
   const sessionTokenRef = useRef(getExamSessionToken());
   const skipNextAutosaveRef = useRef(true);
   const hasBootstrapAttemptRef = useRef(false);
+  const codingFrameRef = useRef(null);
+  const codingFramePollingRef = useRef(null);
 
   const buildAutosavePayload = (
     questionList,
@@ -155,6 +379,7 @@ const AssessmentAttempt = () => {
         ? persistedCodingSubmissions
         : {}
     );
+    setCodingQuestionTotalByChallenge({});
     setSelectedCodingChallengeIndex(0);
     setTimeLeft(Number(attempt.remaining_seconds || 0));
     skipNextAutosaveRef.current = true;
@@ -219,6 +444,40 @@ const AssessmentAttempt = () => {
   };
 
   useEffect(() => {
+    document.documentElement.classList.add('exam-page-scrollbar-hidden');
+    document.body.classList.add('exam-page-scrollbar-hidden');
+
+    return () => {
+      document.documentElement.classList.remove('exam-page-scrollbar-hidden');
+      document.body.classList.remove('exam-page-scrollbar-hidden');
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isPreviewMode) {
+      const previewPayload = buildPreviewAttemptPayload(previewConfig);
+      hasBootstrapAttemptRef.current = false;
+      hydrateAttemptState(previewPayload);
+      setSessionConflict(null);
+      setShowSubmitModal(false);
+      setShowFullscreenLock(false);
+      setLoading(false);
+      return;
+    }
+
     const bootstrapPayload = location.state?.attemptBootstrap;
 
     if (hydrateAttemptState(bootstrapPayload)) {
@@ -230,9 +489,13 @@ const AssessmentAttempt = () => {
 
     hasBootstrapAttemptRef.current = false;
     loadAttempt();
-  }, [attemptId]);
+  }, [attemptId, isPreviewMode, previewConfig, location.state]);
 
   useEffect(() => {
+    if (isPreviewMode) {
+      return undefined;
+    }
+
     const onFullScreenChange = () => {
       const fullscreenActive = Boolean(document.fullscreenElement);
       setIsFullscreen(fullscreenActive);
@@ -251,9 +514,10 @@ const AssessmentAttempt = () => {
 
     document.addEventListener('fullscreenchange', onFullScreenChange);
     return () => document.removeEventListener('fullscreenchange', onFullScreenChange);
-  }, [submittedSummary, attemptData]);
+  }, [submittedSummary, attemptData, isPreviewMode]);
 
   useEffect(() => {
+    if (isPreviewMode) return;
     if (!attemptData || submittedSummary) return;
 
     if (!document.fullscreenElement) {
@@ -261,9 +525,10 @@ const AssessmentAttempt = () => {
         setShowFullscreenLock(true);
       });
     }
-  }, [attemptData, submittedSummary, location.state]);
+  }, [attemptData, submittedSummary, location.state, isPreviewMode]);
 
   useEffect(() => {
+    if (isPreviewMode) return;
     if (!attemptData || submittedSummary) return;
 
     const onBeforeUnload = (event) => {
@@ -274,7 +539,7 @@ const AssessmentAttempt = () => {
 
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [attemptData, submittedSummary]);
+  }, [attemptData, submittedSummary, isPreviewMode]);
 
   useEffect(() => {
     if (!attemptData || submittedSummary) return;
@@ -295,6 +560,7 @@ const AssessmentAttempt = () => {
   }, [timeLeft, attemptData, submittedSummary]);
 
   useEffect(() => {
+    if (isPreviewMode) return;
     if (!attemptData || submittedSummary) return;
     if (!attemptData?.attempt?.id) return;
 
@@ -348,7 +614,8 @@ const AssessmentAttempt = () => {
     attemptId,
     currentSection,
     sectionCompletionOrder,
-    codingSubmissions
+    codingSubmissions,
+    isPreviewMode
   ]);
 
   const answeredCount = useMemo(() => {
@@ -362,6 +629,10 @@ const AssessmentAttempt = () => {
   const unansweredCount = useMemo(() => Math.max(0, questions.length - answeredCount), [questions.length, answeredCount]);
 
   const currentQuestion = questions[currentIndex] || null;
+  const currentQuestionText = useMemo(
+    () => stripDuplicateQuestionPrefix(currentQuestion?.question, currentIndex + 1),
+    [currentQuestion?.question, currentIndex]
+  );
   const codingSection = attemptData?.hostedAssessment?.coding_section || null;
   const codingChallengeIds = useMemo(
     () => (Array.isArray(codingSection?.challenge_ids) ? codingSection.challenge_ids : []),
@@ -370,9 +641,38 @@ const AssessmentAttempt = () => {
   const hasCodingSection = Boolean(codingSection?.enabled && codingChallengeIds.length > 0);
   const isCodingSectionUnlocked = Boolean(codingSection?.unlocked || sectionCompletionOrder?.mcq_completed_at);
   const currentCodingChallengeId = codingChallengeIds[selectedCodingChallengeIndex] || null;
-  const codingAttemptedCount = useMemo(
-    () => codingChallengeIds.filter((challengeId) => Boolean(codingSubmissions?.[challengeId]?.attempted)).length,
-    [codingChallengeIds, codingSubmissions]
+  const codingTotalQuestionCount = useMemo(
+    () => codingChallengeIds.reduce((total, challengeId) => {
+      const knownTotal = toNonNegativeInteger(codingQuestionTotalByChallenge?.[challengeId], -1);
+      if (knownTotal > 0) {
+        return total + knownTotal;
+      }
+
+      const submissionTotal = getCodingSubmissionTotalCount(codingSubmissions?.[challengeId]);
+      if (submissionTotal > 0) {
+        return total + submissionTotal;
+      }
+
+      return total + Math.max(knownTotal, 0);
+    }, 0),
+    [codingChallengeIds, codingQuestionTotalByChallenge, codingSubmissions]
+  );
+  const codingAttemptedQuestionCount = useMemo(
+    () => codingChallengeIds.reduce((total, challengeId) => {
+      const submission = codingSubmissions?.[challengeId];
+      const attempted = getCodingSubmissionAttemptedCount(submission);
+      const knownTotal = toNonNegativeInteger(
+        codingQuestionTotalByChallenge?.[challengeId] ?? getCodingSubmissionTotalCount(submission),
+        -1
+      );
+
+      return total + (knownTotal > 0 ? Math.min(attempted, knownTotal) : attempted);
+    }, 0),
+    [codingChallengeIds, codingQuestionTotalByChallenge, codingSubmissions]
+  );
+  const unresolvedCodingTotalChallengeIds = useMemo(
+    () => codingChallengeIds.filter((challengeId) => toNonNegativeInteger(codingQuestionTotalByChallenge?.[challengeId], -1) < 0),
+    [codingChallengeIds, codingQuestionTotalByChallenge]
   );
 
   useEffect(() => {
@@ -391,6 +691,198 @@ const AssessmentAttempt = () => {
       setSelectedCodingChallengeIndex(0);
     }
   }, [codingChallengeIds, selectedCodingChallengeIndex]);
+
+  useEffect(() => {
+    if (unresolvedCodingTotalChallengeIds.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const loadCodingQuestionTotals = async () => {
+      const settled = await Promise.all(
+        unresolvedCodingTotalChallengeIds.map(async (challengeId) => {
+          try {
+            const response = await compilerAPI.getChallenge(challengeId);
+            return {
+              challengeId,
+              count: extractChallengeQuestionCount(response.data)
+            };
+          } catch {
+            return {
+              challengeId,
+              count: 0
+            };
+          }
+        })
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      setCodingQuestionTotalByChallenge((prev) => {
+        const next = { ...(prev || {}) };
+        let changed = false;
+
+        settled.forEach(({ challengeId, count }) => {
+          const normalizedCount = toNonNegativeInteger(count, 0);
+
+          if (toNonNegativeInteger(next[challengeId], -1) !== normalizedCount) {
+            next[challengeId] = normalizedCount;
+            changed = true;
+          }
+        });
+
+        return changed ? next : prev;
+      });
+    };
+
+    loadCodingQuestionTotals();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [unresolvedCodingTotalChallengeIds]);
+
+  useEffect(() => {
+    if (!hasCodingSection) {
+      return undefined;
+    }
+
+    const onCodingRunnerProgress = (event) => {
+      if (event.origin !== window.location.origin) {
+        return;
+      }
+
+      const payload = event.data;
+      if (!payload || typeof payload !== 'object') {
+        return;
+      }
+
+      if (payload.type !== EMBEDDED_CODING_PROGRESS_EVENT || payload.source !== 'challenge-runner') {
+        return;
+      }
+
+      const challengeId = String(payload.challengeId || '').trim();
+      if (!challengeId || !codingChallengeIds.includes(challengeId)) {
+        return;
+      }
+
+      const incomingIndexes = normalizeAttemptedQuestionIndexes(payload.attemptedQuestionIndexes);
+      const incomingAttempted = Math.max(
+        incomingIndexes.length,
+        toNonNegativeInteger(payload.attemptedQuestionCount, 0)
+      );
+      const incomingTotal = toNonNegativeInteger(payload.totalQuestionCount, 0);
+
+      setCodingSubmissions((prev) => {
+        const previousState = prev && typeof prev === 'object' ? prev : {};
+        const previousEntry = previousState[challengeId] && typeof previousState[challengeId] === 'object'
+          ? previousState[challengeId]
+          : {};
+        const previousIndexes = normalizeAttemptedQuestionIndexes(previousEntry.attemptedQuestionIndexes);
+        const mergedIndexes = Array.from(new Set([...previousIndexes, ...incomingIndexes])).sort((left, right) => left - right);
+        const mergedAttempted = Math.max(
+          getCodingSubmissionAttemptedCount(previousEntry),
+          incomingAttempted,
+          mergedIndexes.length
+        );
+        const mergedTotal = Math.max(
+          getCodingSubmissionTotalCount(previousEntry),
+          incomingTotal
+        );
+
+        return {
+          ...previousState,
+          [challengeId]: {
+            ...previousEntry,
+            attempted: mergedAttempted > 0,
+            attemptedQuestionIndexes: mergedIndexes,
+            attemptedQuestionCount: mergedAttempted,
+            totalQuestionCount: mergedTotal,
+            updatedAt: new Date().toISOString()
+          }
+        };
+      });
+
+      if (incomingTotal > 0) {
+        setCodingQuestionTotalByChallenge((prev) => {
+          const current = toNonNegativeInteger(prev?.[challengeId], 0);
+          if (current >= incomingTotal) {
+            return prev;
+          }
+
+          return {
+            ...(prev || {}),
+            [challengeId]: incomingTotal
+          };
+        });
+      }
+    };
+
+    window.addEventListener('message', onCodingRunnerProgress);
+    return () => {
+      window.removeEventListener('message', onCodingRunnerProgress);
+    };
+  }, [hasCodingSection, codingChallengeIds]);
+
+  const syncCodingFrameHeight = () => {
+    const frame = codingFrameRef.current;
+
+    if (!frame) {
+      return;
+    }
+
+    try {
+      const doc = frame.contentDocument || frame.contentWindow?.document;
+      if (!doc) {
+        return;
+      }
+
+      const nextHeight = Math.max(
+        Number(doc.body?.scrollHeight || 0),
+        Number(doc.documentElement?.scrollHeight || 0),
+        900
+      );
+
+      setCodingFrameHeight((prev) => (Math.abs(prev - nextHeight) > 8 ? nextHeight : prev));
+    } catch {
+      setCodingFrameHeight((prev) => (prev > 0 ? prev : 1000));
+    }
+  };
+
+  const stopCodingFramePolling = () => {
+    if (codingFramePollingRef.current) {
+      window.clearInterval(codingFramePollingRef.current);
+      codingFramePollingRef.current = null;
+    }
+  };
+
+  const handleCodingFrameLoad = () => {
+    syncCodingFrameHeight();
+    stopCodingFramePolling();
+    codingFramePollingRef.current = window.setInterval(syncCodingFrameHeight, 700);
+  };
+
+  useEffect(() => {
+    if (currentSection !== 'coding' || !currentCodingChallengeId) {
+      stopCodingFramePolling();
+      return;
+    }
+
+    syncCodingFrameHeight();
+
+    return () => {
+      stopCodingFramePolling();
+    };
+  }, [currentSection, currentCodingChallengeId]);
+
+  useEffect(() => {
+    return () => {
+      stopCodingFramePolling();
+    };
+  }, []);
 
   const setSingleChoice = (questionIndex, optionIndex) => {
     const key = String(questionIndex);
@@ -426,6 +918,24 @@ const AssessmentAttempt = () => {
 
   const handleSubmit = async (forceAutoSubmit = false) => {
     if (!attemptData || submitting || submittedSummary) return;
+
+    if (isPreviewMode) {
+      const previewPercentage = Math.round((answeredCount / Math.max(1, questions.length)) * 100);
+
+      setSubmittedSummary({
+        status: forceAutoSubmit ? 'auto_submitted' : 'submitted',
+        score: answeredCount,
+        total_marks: questions.length,
+        percentage: previewPercentage,
+        correct_count: answeredCount,
+        total_questions: questions.length,
+        resultVisible: true,
+        resultMode: 'preview'
+      });
+
+      toast.success(forceAutoSubmit ? 'Preview timer ended. Attempt auto-submitted.' : 'Preview submitted successfully');
+      return;
+    }
 
     try {
       setSubmitting(true);
@@ -467,7 +977,7 @@ const AssessmentAttempt = () => {
     if (!attemptData?.attempt?.id || !hasCodingSection || switchingToCoding) return;
 
     const hasUnanswered = unansweredCount > 0;
-    if (hasUnanswered) {
+    if (hasUnanswered && !isPreviewMode) {
       const proceed = window.confirm(
         `You still have ${unansweredCount} unanswered MCQ question(s). Submit MCQ section and continue to coding?`
       );
@@ -479,6 +989,39 @@ const AssessmentAttempt = () => {
 
     try {
       setSwitchingToCoding(true);
+
+      if (isPreviewMode) {
+        const timestamp = new Date().toISOString();
+        const nextCompletionOrder = {
+          mcq_completed_at: sectionCompletionOrder?.mcq_completed_at || timestamp,
+          coding_entered_at: timestamp
+        };
+
+        setSectionCompletionOrder(nextCompletionOrder);
+        setCurrentSection('coding');
+        setAttemptData((prev) => {
+          if (!prev) return prev;
+
+          return {
+            ...prev,
+            hostedAssessment: {
+              ...prev.hostedAssessment,
+              coding_section: {
+                ...prev.hostedAssessment?.coding_section,
+                unlocked: true
+              }
+            },
+            attempt: {
+              ...prev.attempt,
+              current_section: 'coding',
+              section_completion_order: nextCompletionOrder
+            }
+          };
+        });
+
+        toast.success('Moved to coding section.');
+        return;
+      }
 
       await assessmentAPI.autosaveStudentAttempt(
         attemptData.attempt.id,
@@ -535,22 +1078,6 @@ const AssessmentAttempt = () => {
     } finally {
       setSwitchingToCoding(false);
     }
-  };
-
-  const markCurrentCodingChallengeAttempted = () => {
-    if (!currentCodingChallengeId) return;
-
-    setCodingSubmissions((prev) => ({
-      ...prev,
-      [currentCodingChallengeId]: {
-        ...(prev[currentCodingChallengeId] || {}),
-        challengeId: currentCodingChallengeId,
-        attempted: true,
-        attemptedAt: new Date().toISOString()
-      }
-    }));
-
-    toast.success('Coding challenge marked as attempted');
   };
 
   const reEnterFullscreen = async () => {
@@ -676,8 +1203,17 @@ const AssessmentAttempt = () => {
             )}
 
             <div className="flex flex-wrap justify-end gap-2">
-              <Button variant="secondary" onClick={() => navigate('/student/assessments')}>Back to Assessments</Button>
-              <Button onClick={() => navigate('/student/results')}>Go to Results</Button>
+              {isPreviewMode ? (
+                <>
+                  <Button variant="secondary" onClick={() => navigate('/teacher/assessments/preview-lab')}>Back to Preview Lab</Button>
+                  <Button onClick={() => window.location.reload()}>Run Preview Again</Button>
+                </>
+              ) : (
+                <>
+                  <Button variant="secondary" onClick={() => navigate('/student/assessments')}>Back to Assessments</Button>
+                  <Button onClick={() => navigate('/student/results')}>Go to Results</Button>
+                </>
+              )}
             </div>
           </Card.Body>
         </Card>
@@ -686,130 +1222,98 @@ const AssessmentAttempt = () => {
   }
 
   return (
-    <div className="min-h-screen w-full bg-slate-100 p-2 pb-28 sm:p-3 sm:pb-32 lg:p-4 lg:pb-32">
-      <div className="flex w-full flex-col gap-3">
-        <div className="sticky top-2 z-20 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur sm:p-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">{attemptData.hostedAssessment.title}</h1>
-              <p className="text-sm text-slate-500">{attemptData.hostedAssessment.subject} • Attempt {attemptData.attempt.attempt_number}</p>
-              {lastAutoSavedAt && (
+    <div className={`exam-attempt-shell min-h-screen w-full bg-slate-100 ${
+      currentSection === 'coding'
+        ? 'p-1.5 pb-[88px] sm:p-2 sm:pb-[92px] lg:p-2.5 lg:pb-[96px]'
+        : 'p-2 pb-28 sm:p-3 sm:pb-32 lg:p-4 lg:pb-32'
+    }`}>
+      <div className={`flex w-full flex-col ${currentSection === 'coding' ? 'gap-2' : 'gap-3'}`}>
+        <div className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm sm:p-2.5">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0 lg:flex-1">
+              {!hasCodingSection && (
+                <p className="mt-1 text-xs text-slate-500">{attemptData.hostedAssessment.subject}</p>
+              )}
+
+              {currentSection !== 'coding' && lastAutoSavedAt && (
                 <p className="mt-1 text-xs text-slate-500">
                   Autosaved at {lastAutoSavedAt.toLocaleTimeString()}
                 </p>
               )}
             </div>
 
-            <div className="flex flex-wrap items-center justify-end gap-2 lg:max-w-[70%]">
-              <span className={`status-badge ${timeLeft <= 60 ? 'error' : 'warning'}`}>
-                <FiClock className="mr-1 h-3.5 w-3.5" />
-                {formatTimer(timeLeft)}
-              </span>
-              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
-                Answered {answeredCount}/{questions.length}
-              </span>
-              {hasCodingSection && (
-                <span className="rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-700">
-                  Coding {codingAttemptedCount}/{codingChallengeIds.length}
-                </span>
+            <div className="flex flex-wrap items-center justify-end gap-2 lg:flex-1">
+              {currentSection === 'coding' && codingChallengeIds.length > 1 && (
+                <select
+                  className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700"
+                  value={selectedCodingChallengeIndex}
+                  onChange={(event) => setSelectedCodingChallengeIndex(Number(event.target.value) || 0)}
+                >
+                  {codingChallengeIds.map((challengeId, index) => (
+                    <option key={challengeId} value={index}>Challenge {index + 1}</option>
+                  ))}
+                </select>
               )}
-              {hasCodingSection && currentSection === 'mcq' ? (
-                <Button
-                  onClick={moveToCodingSection}
-                  disabled={switchingToCoding}
-                  className="px-5 py-2.5 shadow-md"
-                >
-                  <FiCode className="h-4 w-4" />
-                  {switchingToCoding ? 'Submitting MCQ...' : 'Continue to Coding'}
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => setShowSubmitModal(true)}
-                  disabled={submitting}
-                  className="px-5 py-2.5 shadow-md"
-                >
-                  <FiCheckCircle className="h-4 w-4" />
-                  {submitting ? 'Submitting...' : 'Finalize & Submit'}
-                </Button>
+
+              {hasCodingSection && (
+                <div className="exam-section-switcher order-last inline-flex w-full max-w-[620px] items-stretch p-1 sm:w-auto">
+                  <button
+                    type="button"
+                    className={`exam-section-btn ${currentSection === 'mcq' ? 'is-active' : ''}`}
+                    onClick={() => setCurrentSection('mcq')}
+                  >
+                    <span className={`section-index ${currentSection === 'mcq' ? 'is-active' : ''}`}
+                    >
+                      1
+                    </span>
+                    <span className="min-w-0 leading-tight">
+                      <span className="section-caption">Section</span>
+                      <span className="section-main">
+                        <span className="section-name">MCQ</span>
+                        <span className="section-count">{answeredCount}/{questions.length}</span>
+                      </span>
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`exam-section-btn ${currentSection === 'coding' ? 'is-active' : ''}`}
+                    onClick={() => {
+                      if (switchingToCoding) {
+                        return;
+                      }
+
+                      if (isCodingSectionUnlocked) {
+                        setCurrentSection('coding');
+                        return;
+                      }
+
+                      moveToCodingSection();
+                    }}
+                    disabled={switchingToCoding}
+                  >
+                    <span className={`section-index ${currentSection === 'coding' ? 'is-active' : ''}`}
+                    >
+                      2
+                    </span>
+                    <span className="min-w-0 leading-tight">
+                      <span className="section-caption">Section</span>
+                      <span className="section-main">
+                        <span className="section-name">Coding</span>
+                        <span className="section-count">{codingAttemptedQuestionCount}/{codingTotalQuestionCount}</span>
+                      </span>
+                    </span>
+                    {!isCodingSectionUnlocked && <FiLock className="ml-auto h-3.5 w-3.5 shrink-0 text-slate-400" />}
+                  </button>
+                </div>
               )}
             </div>
           </div>
 
-          {hasCodingSection && (
-            <div className="mt-3 border-t border-slate-100 pt-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-                    currentSection === 'mcq'
-                      ? 'border-blue-200 bg-blue-50 text-blue-700'
-                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                  }`}
-                  onClick={() => setCurrentSection('mcq')}
-                >
-                  Set 1: MCQ
-                </button>
-                <button
-                  type="button"
-                  className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-                    currentSection === 'coding'
-                      ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
-                      : isCodingSectionUnlocked
-                        ? 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                        : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
-                  }`}
-                  onClick={() => {
-                    if (isCodingSectionUnlocked) {
-                      setCurrentSection('coding');
-                    }
-                  }}
-                  disabled={!isCodingSectionUnlocked}
-                >
-                  Set 2: Coding ({codingChallengeIds.length})
-                </button>
-              </div>
-
-              {currentSection === 'coding' && codingChallengeIds.length > 0 && (
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  {codingChallengeIds.map((challengeId, index) => {
-                    const attempted = Boolean(codingSubmissions?.[challengeId]?.attempted);
-
-                    return (
-                      <button
-                        key={challengeId}
-                        type="button"
-                        onClick={() => setSelectedCodingChallengeIndex(index)}
-                        className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-                          index === selectedCodingChallengeIndex
-                            ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
-                            : attempted
-                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                        }`}
-                      >
-                        Challenge {index + 1}{attempted ? ' • Attempted' : ''}
-                      </button>
-                    );
-                  })}
-
-                  <div className="ml-auto">
-                    <Button
-                      variant="secondary"
-                      onClick={markCurrentCodingChallengeAttempted}
-                      disabled={!currentCodingChallengeId}
-                    >
-                      Mark Attempted
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
         </div>
 
-        {!isFullscreen && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+        {!isPreviewMode && !isFullscreen && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
             <div className="flex items-start gap-2">
               <FiLock className="mt-0.5 h-4 w-4" />
               <p>Fullscreen is mandatory during the assessment. Re-entering fullscreen automatically.</p>
@@ -819,45 +1323,72 @@ const AssessmentAttempt = () => {
 
         {currentSection === 'mcq' ? (
           <>
-            <div className="grid min-h-[calc(100vh-190px)] grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
-              <Card className="order-2 flex h-full min-h-105 flex-col lg:order-2">
-                <Card.Header>
-                  <div className="flex items-center justify-between">
-                    <h2 className="section-title text-base">Questions</h2>
-                    <span className="text-xs text-slate-500">{answeredCount}/{questions.length}</span>
-                  </div>
-                </Card.Header>
-                <Card.Body className="hide-scrollbar flex-1 overflow-y-auto">
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
-                  {questions.map((question, index) => {
-                    const key = String(question.index);
-                    const isSaved = Boolean(savedResponses[key]);
-                    const isMarked = Boolean(markedForReview[key]);
+            {!showMcqQuestionPanel && (
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setShowMcqQuestionPanel(true)}
+                  className="px-3 py-1.5"
+                >
+                  <FiEye className="h-4 w-4" />
+                  Show Questions
+                </Button>
+              </div>
+            )}
 
-                    return (
-                      <button
-                        key={question.index}
-                        type="button"
-                        onClick={() => setCurrentIndex(index)}
-                        className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-sm transition-colors ${
-                          currentIndex === index
-                            ? 'border-blue-300 bg-blue-50 text-blue-700'
-                            : isMarked
-                              ? 'border-amber-300 bg-amber-50 text-amber-700'
-                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                        }`}
-                      >
-                        <span className="font-medium">Q{index + 1}</span>
-                        <span className="flex items-center gap-1.5">
-                          {isMarked && <FiFlag className="h-4 w-4 text-amber-600" />}
-                          {isSaved ? <FiCheckCircle className="h-4 w-4 text-green-600" /> : <span className="h-2.5 w-2.5 rounded-full bg-slate-200" />}
-                        </span>
-                      </button>
-                    );
-                  })}
-                  </div>
-                </Card.Body>
-              </Card>
+            <div className={`grid min-h-[calc(100vh-190px)] grid-cols-1 gap-3 ${showMcqQuestionPanel ? 'lg:grid-cols-[minmax(0,1fr)_320px]' : ''}`}>
+              {showMcqQuestionPanel && (
+                <Card className="order-2 flex h-full min-h-105 flex-col lg:order-2">
+                  <Card.Header>
+                    <div className="flex items-center justify-between">
+                      <h2 className="section-title text-base">Questions</h2>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-500">{answeredCount}/{questions.length}</span>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => setShowMcqQuestionPanel(false)}
+                          className="px-2.5 py-1 text-xs"
+                        >
+                          <FiEyeOff className="h-3.5 w-3.5" />
+                          Hide
+                        </Button>
+                      </div>
+                    </div>
+                  </Card.Header>
+                  <Card.Body className="hide-scrollbar flex-1 overflow-y-auto">
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
+                    {questions.map((question, index) => {
+                      const key = String(question.index);
+                      const isSaved = Boolean(savedResponses[key]);
+                      const isMarked = Boolean(markedForReview[key]);
+
+                      return (
+                        <button
+                          key={question.index}
+                          type="button"
+                          onClick={() => setCurrentIndex(index)}
+                          className={`flex w-full items-center justify-between rounded-lg border px-3 py-2.5 text-sm transition-colors ${
+                            currentIndex === index
+                              ? 'border-blue-300 bg-blue-50 text-blue-700'
+                              : isMarked
+                                ? 'border-amber-300 bg-amber-50 text-amber-700'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          <span className="font-medium">Q{index + 1}</span>
+                          <span className="flex items-center gap-1.5">
+                            {isMarked && <FiFlag className="h-4 w-4 text-amber-600" />}
+                            {isSaved ? <FiCheckCircle className="h-4 w-4 text-green-600" /> : <span className="h-2.5 w-2.5 rounded-full bg-slate-200" />}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    </div>
+                  </Card.Body>
+                </Card>
+              )}
 
               <Card className="order-1 flex h-full min-h-105 flex-col lg:order-1">
                 <Card.Header>
@@ -869,7 +1400,7 @@ const AssessmentAttempt = () => {
                 <Card.Body className="hide-scrollbar flex-1 overflow-y-auto">
                   {currentQuestion ? (
                     <div className="space-y-5">
-                      <p className="text-lg font-medium leading-relaxed text-slate-800">{currentQuestion.question}</p>
+                      <p className="text-lg font-medium leading-relaxed text-slate-800">{currentQuestionText || currentQuestion.question}</p>
 
                       {currentQuestion.type === 'blank' ? (
                         <input
@@ -899,7 +1430,7 @@ const AssessmentAttempt = () => {
                                     setSingleChoice(currentQuestion.index, optionIndex);
                                   }
                                 }}
-                                className={`w-full rounded-xl border p-3.5 text-left text-[15px] transition-colors ${
+                                className={`w-full rounded-lg border p-3.5 text-left text-[15px] transition-colors ${
                                   selected
                                     ? 'border-blue-300 bg-blue-50 text-blue-800'
                                     : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
@@ -912,12 +1443,12 @@ const AssessmentAttempt = () => {
                         </div>
                       )}
 
-                      <div className="rounded-xl border border-slate-100 bg-slate-50 p-2 text-xs text-slate-500">
+                      <div className="rounded-md border border-slate-100 bg-slate-50 p-2 text-xs text-slate-500">
                         Use the bottom exam action dock for navigation and answer controls.
                       </div>
                     </div>
                   ) : (
-                    <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
                       <div className="flex items-start gap-2">
                         <FiAlertTriangle className="mt-0.5 h-4 w-4" />
                         <p>No question found. Please refresh and try again.</p>
@@ -928,13 +1459,9 @@ const AssessmentAttempt = () => {
               </Card>
             </div>
 
-            <div className="fixed bottom-3 left-2 right-2 z-30 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur sm:left-3 sm:right-3 lg:left-4 lg:right-4">
+            <div className="fixed bottom-3 left-2 right-2 z-30 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur sm:left-3 sm:right-3 sm:p-3.5 lg:left-4 lg:right-4">
               <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                <div className="flex items-center gap-2 text-xs text-slate-600">
-                  <FiShield className="h-4 w-4 text-blue-600" />
-                  <span>Exam actions are pinned here for quick access.</span>
-                </div>
-                <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
                     disabled={currentIndex === 0}
@@ -961,27 +1488,84 @@ const AssessmentAttempt = () => {
                     {currentIndex >= questions.length - 1 ? 'Save' : 'Save & Next'}
                   </Button>
                 </div>
+
+                <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                  <div className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1 text-xs font-semibold ${timeLeft <= 60 ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                    <FiClock className="h-4 w-4" />
+                    <span>Time Left: {formatTimer(timeLeft)}</span>
+                  </div>
+
+                  {hasCodingSection ? (
+                    <Button
+                      onClick={moveToCodingSection}
+                      disabled={switchingToCoding || submitting}
+                      variant="danger"
+                      className="btn-exam-finish"
+                    >
+                      <FiSend className="h-4 w-4" />
+                      {switchingToCoding ? 'Submitting MCQ...' : 'Next Section'}
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => setShowSubmitModal(true)}
+                      disabled={submitting}
+                      variant="danger"
+                      className="btn-exam-finish"
+                    >
+                      <FiCheckCircle className="h-4 w-4" />
+                      {submitting ? 'Submitting...' : 'Finish Test'}
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           </>
         ) : (
           <>
-            <div className="grid min-h-[calc(100vh-190px)] grid-cols-1 gap-3">
-              <Card className="flex min-h-[72vh] flex-col overflow-hidden">
-                <Card.Body className="flex-1 overflow-hidden p-2 lg:p-3">
-                  {currentCodingChallengeId ? (
-                    <iframe
-                      title={`coding-challenge-${currentCodingChallengeId}`}
-                      src={`/compiler/challenges/run/${encodeURIComponent(currentCodingChallengeId)}?embedded=1`}
-                      className="h-[82vh] min-h-[640px] w-full rounded-xl border border-slate-200"
-                    />
-                  ) : (
-                    <p className="p-2 text-sm text-slate-500">No coding challenge available for this exam.</p>
-                  )}
-                </Card.Body>
-              </Card>
+            <div className="w-full">
+              {currentCodingChallengeId ? (
+                <iframe
+                  ref={codingFrameRef}
+                  title={`coding-challenge-${currentCodingChallengeId}`}
+                  src={`/compiler/challenges/run/${encodeURIComponent(currentCodingChallengeId)}?embedded=1`}
+                  onLoad={handleCodingFrameLoad}
+                  className="block w-full border-0 bg-transparent"
+                  style={{ height: codingFrameHeight > 0 ? `${codingFrameHeight}px` : '1200px' }}
+                />
+              ) : (
+                <p className="p-2 text-sm text-slate-500">No coding challenge available for this exam.</p>
+              )}
             </div>
           </>
+        )}
+
+        {currentSection === 'coding' && (
+          <div className="fixed bottom-3 left-2 right-2 z-30 rounded-xl border border-slate-200 bg-white/95 px-3 py-3 shadow-lg backdrop-blur sm:left-3 sm:right-3 sm:px-4 lg:left-4 lg:right-4">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <div className={`exam-metric-chip ${isOnline ? 'exam-metric-chip--network-online' : 'exam-metric-chip--network-offline'}`}>
+                {isOnline ? <FiWifi className="h-4 w-4" /> : <FiWifiOff className="h-4 w-4" />}
+                <span className="chip-label">Network</span>
+                <span className="chip-value">{isOnline ? 'Connected' : 'Offline'}</span>
+              </div>
+
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                <div className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1 text-xs font-semibold ${timeLeft <= 60 ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                  <FiClock className="h-4 w-4" />
+                  <span>Time Left: {formatTimer(timeLeft)}</span>
+                </div>
+
+                <Button
+                  onClick={() => setShowSubmitModal(true)}
+                  disabled={submitting}
+                  variant="danger"
+                  className="btn-exam-finish"
+                >
+                  <FiCheckCircle className="h-4 w-4" />
+                  {submitting ? 'Submitting...' : 'Finish Test'}
+                </Button>
+              </div>
+            </div>
+          </div>
         )}
 
         <Modal
@@ -1058,7 +1642,7 @@ const AssessmentAttempt = () => {
           {hasCodingSection && (
             <div className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900">
               <p>
-                Coding challenges attempted: <span className="font-semibold">{codingAttemptedCount}/{codingChallengeIds.length}</span>
+                Coding questions attempted: <span className="font-semibold">{codingAttemptedQuestionCount}/{codingTotalQuestionCount}</span>
               </p>
             </div>
           )}
@@ -1082,7 +1666,7 @@ const AssessmentAttempt = () => {
           </div>
         </Modal>
 
-        {showFullscreenLock && !submittedSummary && (
+        {!isPreviewMode && showFullscreenLock && !submittedSummary && (
           <div className="fixed inset-0 z-70 flex items-center justify-center bg-slate-950/70 p-4">
             <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
               <div className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-full bg-amber-100 text-amber-700">
