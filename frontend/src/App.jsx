@@ -19,13 +19,14 @@ import TeacherAssessmentTemplates from './pages/teacher/AssessmentTemplates';
 import TeacherAssessmentTemplateBuilder from './pages/teacher/AssessmentTemplateBuilder';
 import TeacherHostExams from './pages/teacher/HostExams';
 import TeacherHostExamCreate from './pages/teacher/HostExamCreate';
+import TeacherChallengeBrowser from './pages/teacher/ChallengeBrowser';
+import TeacherChallengeBuilder from './pages/teacher/ChallengeBuilder';
+import TeacherChallengeRunner from './pages/teacher/ChallengeRunner';
 import StudentDashboard from './pages/student/Dashboard';
 import StudentAssessments from './pages/student/Assessments';
 import StudentResults from './pages/student/Results';
 import StudentAssessmentInstructions from './pages/student/AssessmentInstructions';
 import StudentAssessmentAttempt from './pages/student/AssessmentAttempt';
-import ChallengeCreator from './pages/compiler/ChallengeCreator';
-import ChallengeBrowser from './pages/compiler/ChallengeBrowser';
 import ChallengeRunner from './pages/compiler/ChallengeRunner';
 import UnderDevelopment from './pages/UnderDevelopment';
 
@@ -209,27 +210,76 @@ function App() {
           />
 
           <Route
+            path="/teacher/compiler"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <Navigate to="/teacher/compiler/challenges" replace />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/teacher/compiler/challenges"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <TeacherChallengeBrowser />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/teacher/compiler/challenges/new"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <TeacherChallengeBuilder />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/teacher/compiler/challenges/run"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <TeacherChallengeRunner />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/teacher/compiler/challenges/run/:challengeId"
+            element={
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <TeacherChallengeRunner />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
             path="/compiler/challenges"
             element={
-              <ChallengeBrowser />
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <Navigate to="/teacher/compiler/challenges" replace />
+              </ProtectedRoute>
             }
           />
           <Route
             path="/compiler/challenges/new"
             element={
-              <ChallengeCreator />
+              <ProtectedRoute allowedRoles={['teacher']}>
+                <Navigate to="/teacher/compiler/challenges/new" replace />
+              </ProtectedRoute>
             }
           />
           <Route
             path="/compiler/challenges/run"
             element={
-              <ChallengeRunner />
+              <ProtectedRoute allowedRoles={['teacher', 'student']}>
+                <ChallengeRunner />
+              </ProtectedRoute>
             }
           />
           <Route
             path="/compiler/challenges/run/:challengeId"
             element={
-              <ChallengeRunner />
+              <ProtectedRoute allowedRoles={['teacher', 'student']}>
+                <ChallengeRunner />
+              </ProtectedRoute>
             }
           />
 

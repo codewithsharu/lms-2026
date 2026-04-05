@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getRoleBadgeClass } from '../utils/uiTheme';
 import { 
   FiHome, FiUsers, FiSettings, FiLogOut, FiMenu, FiX,
-  FiBook, FiClipboard, FiBarChart2, FiUser, FiChevronRight, FiChevronLeft, FiActivity, FiDatabase, FiCode, FiTerminal
+  FiBook, FiClipboard, FiBarChart2, FiUser, FiChevronRight, FiChevronLeft, FiActivity, FiDatabase, FiTerminal
 } from 'react-icons/fi';
 
 const Layout = ({ children }) => {
@@ -38,8 +38,6 @@ const Layout = ({ children }) => {
         { name: 'Students', path: '/admin/students', icon: FiUsers },
         { name: 'Teachers', path: '/admin/teachers', icon: FiUser },
         { name: 'Classes', path: '/admin/classes', icon: FiBook },
-        { name: 'Create Challenges', path: '/compiler/challenges/new', icon: FiCode },
-        { name: 'Run Compiler Lab', path: '/compiler/challenges/run', icon: FiTerminal },
         { name: 'Analytics', path: '/admin/analytics', icon: FiBarChart2 },
         { name: 'Settings', path: '/admin/settings', icon: FiSettings },
       ],
@@ -48,8 +46,7 @@ const Layout = ({ children }) => {
         { name: 'My Students', path: '/teacher/students', icon: FiUsers },
         { name: 'My Classes', path: '/teacher/classes', icon: FiBook },
         { name: 'Question Bank', path: '/teacher/assessments/templates', icon: FiClipboard },
-        { name: 'Create Challenges', path: '/compiler/challenges/new', icon: FiCode },
-        { name: 'Run Compiler Lab', path: '/compiler/challenges/run', icon: FiTerminal },
+        { name: 'Challenges', path: '/teacher/compiler/challenges', icon: FiTerminal },
         { name: 'Schedule Exams', path: '/teacher/assessments/host', icon: FiActivity },
         { name: 'Analytics', path: '/teacher/analytics', icon: FiBarChart2 },
       ],
@@ -69,13 +66,120 @@ const Layout = ({ children }) => {
 
   const roleBadgeClass = getRoleBadgeClass(user?.role);
 
-  const isItemActive = (itemPath) => {
+  const matchesItemPath = (itemPath) => {
     if (location.pathname === itemPath) return true;
     if (itemPath === '/admin' || itemPath === '/teacher' || itemPath === '/student') return false;
     return location.pathname.startsWith(`${itemPath}/`);
   };
 
-  const currentNavItem = navItems.find((item) => isItemActive(item.path));
+  const currentNavItem = navItems
+    .filter((item) => matchesItemPath(item.path))
+    .sort((a, b) => b.path.length - a.path.length)[0] || null;
+
+  const isItemActive = (itemPath) => currentNavItem?.path === itemPath;
+
+  const roleHomePath = {
+    admin: '/admin',
+    teacher: '/teacher',
+    student: '/student'
+  }[user?.role] || '/';
+
+  const toTitleCaseLabel = (value = '') => {
+    const normalized = String(value || '').replace(/[-_]+/g, ' ').trim();
+
+    if (!normalized) {
+      return '';
+    }
+
+    return normalized
+      .split(/\s+/)
+      .map((token) => (
+        token.length <= 2
+          ? token.toUpperCase()
+          : `${token.charAt(0).toUpperCase()}${token.slice(1)}`
+      ))
+      .join(' ');
+  };
+
+  const isLikelyIdSegment = (segment = '') => {
+    const value = String(segment || '').trim();
+
+    if (!value) {
+      return false;
+    }
+
+    if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value)) {
+      return true;
+    }
+
+    if (/^[0-9a-f]{16,}$/i.test(value)) {
+      return true;
+    }
+
+    return value.length > 16 && !/[aeiou]/i.test(value);
+  };
+
+  const secondaryBreadcrumbLabel = useMemo(() => {
+    const path = location.pathname;
+
+    if (/\/compiler\/challenges\/run(?:\/|$)/.test(path)) {
+      return 'Exam Runner';
+    }
+
+    if (/\/compiler\/challenges\/new(?:\/|$)/.test(path)) {
+      const isEditMode = new URLSearchParams(location.search).has('sourceChallengeId');
+      return isEditMode ? 'Edit Challenge' : 'Create Challenge';
+    }
+
+    if (!currentNavItem) {
+      return '';
+    }
+
+    if (path === currentNavItem.path || path === `${currentNavItem.path}/`) {
+      return '';
+    }
+
+    let remainder = path.startsWith(currentNavItem.path)
+      ? path.slice(currentNavItem.path.length)
+      : '';
+
+    remainder = String(remainder || '').replace(/^\/+|\/+$/g, '');
+    if (!remainder) {
+      return '';
+    }
+
+    const remainderParts = remainder.split('/').filter(Boolean);
+    let candidate = remainderParts[remainderParts.length - 1];
+
+    if (isLikelyIdSegment(candidate) && remainderParts.length > 1) {
+      candidate = remainderParts[remainderParts.length - 2];
+    }
+
+    const derived = toTitleCaseLabel(candidate);
+    if (!derived) {
+      return '';
+    }
+
+    if (derived.toLowerCase() === String(currentNavItem.name || '').toLowerCase()) {
+      return '';
+    }
+
+    return derived;
+  }, [location.pathname, location.search, currentNavItem]);
+
+  const breadcrumbs = useMemo(() => {
+    const items = [{ label: 'EDU LMS', path: roleHomePath }];
+
+    if (currentNavItem) {
+      items.push({ label: currentNavItem.name, path: currentNavItem.path });
+    }
+
+    if (secondaryBreadcrumbLabel) {
+      items.push({ label: secondaryBreadcrumbLabel, path: location.pathname });
+    }
+
+    return items;
+  }, [roleHomePath, currentNavItem, secondaryBreadcrumbLabel, location.pathname]);
 
   const getIconTone = (path) => {
     if (path.includes('students')) {
@@ -129,19 +233,10 @@ const Layout = ({ children }) => {
 
       {/* Sidebar */}
       <aside className={`
-        fixed top-0 left-0 z-50 h-full bg-white border-r border-gray-200 shadow-sm transform transition-all duration-300
+        fixed top-0 left-0 z-50 flex h-full flex-col overflow-hidden bg-white border-r border-gray-200 shadow-sm transform transition-all duration-300
         ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-64'}
         lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
       `}>
-        <button
-          onClick={() => setSidebarCollapsed((prev) => !prev)}
-          className="hidden lg:inline-flex absolute right-0 top-1/2 z-20 h-8 w-8 translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-primary shadow-sm hover:bg-blue-100 hover:text-primary-dark transition-colors"
-          title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          {sidebarCollapsed ? <FiChevronRight className="w-4 h-4" /> : <FiChevronLeft className="w-4 h-4" />}
-        </button>
-
         {/* Logo */}
         <div className="h-17 flex items-center justify-between px-4 border-b border-gray-200 bg-white">
           <div className="flex items-center gap-3 min-w-0">
@@ -164,7 +259,7 @@ const Layout = ({ children }) => {
         </div>
 
         {/* Navigation */}
-        <nav className={`flex-1 py-5 space-y-1.5 overflow-y-auto hide-scrollbar pb-36 ${sidebarCollapsed ? 'px-2' : 'px-3'}`}>
+        <nav className={`sidebar-nav-scroll flex-1 min-h-0 py-5 space-y-1.5 overflow-y-auto overscroll-contain ${sidebarCollapsed ? 'pl-2 pr-3' : 'pl-3 pr-4'}`}>
           <p className={`pb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-400 ${sidebarCollapsed ? 'px-2 text-center' : 'px-3'}`}>
             Navigation
           </p>
@@ -201,7 +296,7 @@ const Layout = ({ children }) => {
         </nav>
 
         {/* User section */}
-        <div className={`absolute bottom-0 left-0 right-0 border-t border-gray-200 bg-white ${sidebarCollapsed ? 'p-2' : 'p-4'}`}>
+        <div className={`border-t border-gray-200 bg-white ${sidebarCollapsed ? 'p-2' : 'p-4'}`}>
           <div className={`rounded-2xl border border-gray-200 bg-gray-50 ${sidebarCollapsed ? 'p-2' : 'p-3'}`}>
             <div className={`mb-3 flex items-center gap-3 ${sidebarCollapsed ? 'justify-center mb-2' : ''}`}>
               <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center shadow-sm">
@@ -241,6 +336,16 @@ const Layout = ({ children }) => {
         </div>
       </aside>
 
+      <button
+        onClick={() => setSidebarCollapsed((prev) => !prev)}
+        className="hidden lg:inline-flex fixed top-1/2 z-50 h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-500 shadow-sm hover:border-blue-200 hover:text-primary transition-all duration-300"
+        style={{ left: sidebarCollapsed ? '5rem' : '16rem' }}
+        title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      >
+        {sidebarCollapsed ? <FiChevronRight className="w-4 h-4" /> : <FiChevronLeft className="w-4 h-4" />}
+      </button>
+
       {/* Main content */}
       <div className={`${sidebarCollapsed ? 'lg:ml-20' : 'lg:ml-64'} min-h-screen transition-all duration-300`}>
         {/* Top bar */}
@@ -253,9 +358,26 @@ const Layout = ({ children }) => {
               <FiMenu className="w-6 h-6" />
             </button>
             <div className="hidden sm:flex items-center gap-2 text-sm text-gray-500 min-w-0">
-              <span className="font-medium text-gray-700">EDU LMS</span>
-              <FiChevronRight className="h-4 w-4 text-gray-400" />
-              <span className="truncate text-gray-900 font-medium">{currentNavItem?.name || 'Dashboard'}</span>
+              {breadcrumbs.map((crumb, index) => {
+                const isLast = index === breadcrumbs.length - 1;
+
+                return (
+                  <div key={`${crumb.path}-${crumb.label}-${index}`} className="flex min-w-0 items-center gap-2">
+                    {index > 0 && <FiChevronRight className="h-4 w-4 shrink-0 text-gray-400" />}
+
+                    {isLast ? (
+                      <span className="truncate font-medium text-gray-900">{crumb.label}</span>
+                    ) : (
+                      <Link
+                        to={crumb.path}
+                        className="truncate font-medium text-gray-700 transition-colors hover:text-primary"
+                      >
+                        {crumb.label}
+                      </Link>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 

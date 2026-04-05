@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { FiExternalLink, FiPlus, FiSave, FiSend, FiTrash2 } from 'react-icons/fi';
+import { FiEdit3, FiPlayCircle, FiPlus, FiSend, FiTrash2 } from 'react-icons/fi';
 import Button from '../../components/ui/Button';
 import Card from '../../components/ui/Card';
 import InputField from '../../components/ui/InputField';
@@ -9,6 +9,7 @@ import Alert from '../../components/ui/Alert';
 import { compilerAPI } from '../../services/api';
 import CompilerTopBar from './CompilerTopBar';
 import { CHALLENGE_PRESETS, SUPPORTED_LANGUAGES } from './challengePresets';
+import { buildCompilerPath, isTeacherCompilerPath } from './routePaths';
 
 const DIFFICULTY_OPTIONS = ['easy', 'medium', 'hard'];
 const DEMO_PRESET = CHALLENGE_PRESETS[0];
@@ -175,10 +176,40 @@ const parsePayloadJson = (rawJson) => {
   return parsed;
 };
 
+const extractEditablePayload = (payload) => {
+  const candidates = [
+    payload,
+    payload?.data,
+    payload?.doc,
+    payload?.result,
+    payload?.value
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      candidate
+      && typeof candidate === 'object'
+      && !Array.isArray(candidate)
+      && candidate.challenge
+      && Array.isArray(candidate.problems)
+    ) {
+      return candidate;
+    }
+  }
+
+  return null;
+};
+
 const ChallengeCreator = () => {
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const isPortalMode = isTeacherCompilerPath(location.pathname);
+  const sourceChallengeId = String(searchParams.get('sourceChallengeId') || '').trim();
   const [formState, setFormState] = useState(() => buildFormFromPayload(DEMO_PRESET.payload));
   const [jsonInput, setJsonInput] = useState(() => JSON.stringify(DEMO_PRESET.payload, null, 2));
   const [jsonError, setJsonError] = useState('');
+  const [sourceLoadError, setSourceLoadError] = useState('');
+  const [loadingSourceChallenge, setLoadingSourceChallenge] = useState(false);
   const [isEditingJson, setIsEditingJson] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -188,16 +219,78 @@ const ChallengeCreator = () => {
   const payloadJson = useMemo(() => JSON.stringify(payload, null, 2), [payload]);
 
   const challengeId = useMemo(() => extractChallengeId(result), [result]);
-  const challengeSlug = useMemo(() => extractChallengeSlug(result), [result]);
+  const runnerPath = useMemo(
+    () => (challengeId
+      ? buildCompilerPath(location.pathname, `/run/${encodeURIComponent(challengeId)}`)
+      : ''),
+    [location.pathname, challengeId]
+  );
+  const editPath = useMemo(
+    () => (challengeId
+      ? buildCompilerPath(location.pathname, `/new?sourceChallengeId=${encodeURIComponent(challengeId)}`)
+      : ''),
+    [location.pathname, challengeId]
+  );
 
-  const openUrl = useMemo(() => {
-    if (!challengeId) return '';
-    if (challengeSlug) {
-      return `https://onecompiler.com/challenges/${challengeId}/${challengeSlug}`;
-    }
+  const pageTitle = sourceChallengeId ? 'Edit Challenge' : 'Challenge Builder';
+  const pageSubtitle = sourceChallengeId
+    ? 'Load, review, and edit challenge content in one place.'
+    : 'Simple challenge flow: form and JSON stay in sync.';
 
-    return `https://onecompiler.com/challenges/${challengeId}`;
-  }, [challengeId, challengeSlug]);
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSourceChallenge = async () => {
+      if (!sourceChallengeId) {
+        setSourceLoadError('');
+        setLoadingSourceChallenge(false);
+        return;
+      }
+
+      try {
+        setLoadingSourceChallenge(true);
+        setSourceLoadError('');
+
+        const response = await compilerAPI.getChallenge(sourceChallengeId);
+        const editablePayload = extractEditablePayload(response.data);
+
+        if (!editablePayload) {
+          throw new Error('This challenge payload cannot be edited in builder format');
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        setFormState(buildFormFromPayload(editablePayload));
+        setJsonInput(JSON.stringify(editablePayload, null, 2));
+        setJsonError('');
+        setError('');
+        setResult(null);
+        setIsEditingJson(false);
+      } catch (loadError) {
+        if (cancelled) {
+          return;
+        }
+
+        const message = loadError.response?.data?.error
+          || loadError.message
+          || 'Failed to load challenge for editing';
+        setSourceLoadError(message);
+        toast.error(message);
+      } finally {
+        if (!cancelled) {
+          setLoadingSourceChallenge(false);
+        }
+      }
+    };
+
+    loadSourceChallenge();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceChallengeId]);
 
   useEffect(() => {
     if (isEditingJson) {
@@ -343,7 +436,7 @@ const ChallengeCreator = () => {
       setFormState(buildFormFromPayload(requestPayload));
       setJsonInput(JSON.stringify(requestPayload, null, 2));
       setResult(response.data);
-      toast.success('Challenge created successfully');
+      toast.success(sourceChallengeId ? 'Challenge saved successfully' : 'Challenge created successfully');
     } catch (requestError) {
       const message = requestError.response?.data?.error || 'Challenge creation failed';
       setError(message);
@@ -369,13 +462,32 @@ const ChallengeCreator = () => {
   };
 
   return (
-    <div className="compiler-shell">
-      <CompilerTopBar
-        title="Challenge Builder"
-        subtitle="Simple challenge flow: form and JSON stay in sync."
-      />
+    <div className={isPortalMode ? 'portal-compiler' : 'compiler-shell'}>
+      {isPortalMode ? (
+        <div className="page-header">
+          <h1>{pageTitle}</h1>
+          <p>{pageSubtitle}</p>
+        </div>
+      ) : (
+        <CompilerTopBar
+          title={pageTitle}
+          subtitle={pageSubtitle}
+        />
+      )}
 
-      <main className="compiler-main app-page">
+      <main className={isPortalMode ? 'app-page' : 'compiler-main app-page'}>
+        {sourceChallengeId && (
+          <section className="compiler-card mb-4 p-4 lg:p-5">
+            <p className="text-sm font-medium text-slate-700 break-all">
+              Editing challenge ID: <span className="font-mono">{sourceChallengeId}</span>
+            </p>
+            {loadingSourceChallenge && (
+              <p className="mt-1 text-xs text-slate-500">Loading challenge content...</p>
+            )}
+            {sourceLoadError && <Alert className="mt-2">{sourceLoadError}</Alert>}
+          </section>
+        )}
+
         <section className="compiler-card p-4 lg:p-5">
           <InputField
             label="Challenge Title"
@@ -596,7 +708,9 @@ const ChallengeCreator = () => {
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button type="button" onClick={createChallenge} disabled={submitting}>
                     <FiSend className="h-4 w-4" />
-                    {submitting ? 'Creating...' : 'Create Challenge'}
+                    {submitting
+                      ? (sourceChallengeId ? 'Saving...' : 'Creating...')
+                      : (sourceChallengeId ? 'Save Challenge' : 'Create Challenge')}
                   </Button>
                 </div>
               </Card.Body>
@@ -606,8 +720,8 @@ const ChallengeCreator = () => {
 
         {result && (
           <section className="compiler-card p-4 lg:p-5">
-            <h2 className="section-title">Create API Response</h2>
-            <p className="mt-1 text-sm text-slate-500">Challenge created. Jump directly to runner and execute test cases.</p>
+            <h2 className="section-title">Challenge API Response</h2>
+            <p className="mt-1 text-sm text-slate-500">View or continue editing this challenge from here.</p>
 
             {challengeId ? (
               <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -615,16 +729,18 @@ const ChallengeCreator = () => {
                 <p className="font-mono text-sm text-slate-800 break-all">{challengeId}</p>
 
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Link to={`/compiler/challenges/run/${encodeURIComponent(challengeId)}`} className="btn btn-primary">
-                    <FiSave className="h-4 w-4" />
-                    Open Runner
+                  <Link to={runnerPath} className="btn btn-primary">
+                    <FiPlayCircle className="h-4 w-4" />
+                    View Challenge
                   </Link>
-                  {openUrl && (
-                    <a href={openUrl} target="_blank" rel="noreferrer" className="btn btn-secondary">
-                      <FiExternalLink className="h-4 w-4" />
-                      Open On OneCompiler
-                    </a>
-                  )}
+                  <Link
+                    to={editPath}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-800"
+                    title="Edit challenge"
+                    aria-label="Edit challenge"
+                  >
+                    <FiEdit3 className="h-[18px] w-[18px]" />
+                  </Link>
                 </div>
               </div>
             ) : (

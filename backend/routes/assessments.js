@@ -30,6 +30,8 @@ const HOSTED_EXAM_ALLOWED_PUBLISH_STATUSES = ['draft', 'published', 'closed'];
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EXAM_SESSION_HEADER = 'x-exam-session-token';
 const EXAM_SESSION_META_KEY = '__sessionMeta';
+const ATTEMPT_SECTION_META_KEY = '__sectionMeta';
+const CODING_SUBMISSIONS_META_KEY = '__codingSubmissions';
 
 const safeInt = (value, fallback) => {
   const parsed = Number.parseInt(value, 10);
@@ -61,6 +63,160 @@ const parseBooleanInput = (value, fallback = false) => {
     if (normalized === 'false' || normalized === '0') return false;
   }
   return fallback;
+};
+
+const normalizeChallengeIdList = (rawValue) => {
+  if (!Array.isArray(rawValue)) {
+    return [];
+  }
+
+  return [...new Set(
+    rawValue
+      .map((entry) => String(entry || '').trim())
+      .filter(Boolean)
+  )];
+};
+
+const normalizeCodingSection = (rawValue) => {
+  if (!rawValue || typeof rawValue !== 'object') {
+    return null;
+  }
+
+  const enabled = parseBooleanInput(rawValue.enabled, false);
+  if (!enabled) {
+    return null;
+  }
+
+  const challengeIds = normalizeChallengeIdList(
+    Array.isArray(rawValue.challenge_ids)
+      ? rawValue.challenge_ids
+      : []
+  );
+
+  if (challengeIds.length === 0) {
+    return null;
+  }
+
+  const timeAllocationMinutes = Math.max(0, safeInt(rawValue.time_allocation_minutes, 0));
+
+  return {
+    enabled: true,
+    section_order: ['mcq', 'coding'],
+    challenge_ids: challengeIds,
+    time_allocation_minutes: timeAllocationMinutes
+  };
+};
+
+const validateCodingSectionInput = (rawValue) => {
+  if (rawValue === undefined || rawValue === null) {
+    return { normalized: null, error: null };
+  }
+
+  if (typeof rawValue !== 'object' || Array.isArray(rawValue)) {
+    return { normalized: null, error: 'Invalid coding section payload' };
+  }
+
+  const enabled = parseBooleanInput(rawValue.enabled, false);
+  if (!enabled) {
+    return { normalized: null, error: null };
+  }
+
+  if (!Array.isArray(rawValue.challenge_ids)) {
+    return {
+      normalized: null,
+      error: 'Coding challenges must be an array when coding section is enabled'
+    };
+  }
+
+  const challengeIds = normalizeChallengeIdList(rawValue.challenge_ids);
+  if (challengeIds.length === 0) {
+    return {
+      normalized: null,
+      error: 'Select at least one coding challenge when coding section is enabled'
+    };
+  }
+
+  const rawTimeAllocation = rawValue.time_allocation_minutes;
+  let timeAllocationMinutes = 0;
+
+  if (rawTimeAllocation !== undefined && rawTimeAllocation !== null && String(rawTimeAllocation).trim() !== '') {
+    const parsedTime = Number(rawTimeAllocation);
+
+    if (!Number.isFinite(parsedTime) || parsedTime < 0) {
+      return {
+        normalized: null,
+        error: 'Coding time allocation must be a non-negative number'
+      };
+    }
+
+    timeAllocationMinutes = Math.floor(parsedTime);
+  }
+
+  return {
+    normalized: {
+      enabled: true,
+      section_order: ['mcq', 'coding'],
+      challenge_ids: challengeIds,
+      time_allocation_minutes: timeAllocationMinutes
+    },
+    error: null
+  };
+};
+
+const getAttemptSectionState = (answers) => {
+  if (!answers || typeof answers !== 'object') {
+    return {
+      currentSection: 'mcq',
+      mcqCompletedAt: null,
+      codingEnteredAt: null
+    };
+  }
+
+  const meta = answers[ATTEMPT_SECTION_META_KEY];
+  if (!meta || typeof meta !== 'object') {
+    return {
+      currentSection: 'mcq',
+      mcqCompletedAt: null,
+      codingEnteredAt: null
+    };
+  }
+
+  const currentSection = meta.currentSection === 'coding' ? 'coding' : 'mcq';
+
+  return {
+    currentSection,
+    mcqCompletedAt: meta.mcqCompletedAt || null,
+    codingEnteredAt: meta.codingEnteredAt || null
+  };
+};
+
+const applyAttemptSectionState = (answers, updates = {}) => {
+  const current = getAttemptSectionState(answers);
+
+  return {
+    ...(answers && typeof answers === 'object' ? answers : {}),
+    [ATTEMPT_SECTION_META_KEY]: {
+      currentSection: updates.currentSection || current.currentSection,
+      mcqCompletedAt: updates.mcqCompletedAt || current.mcqCompletedAt,
+      codingEnteredAt: updates.codingEnteredAt || current.codingEnteredAt
+    }
+  };
+};
+
+const sanitizeCodingSectionForStudent = (codingSection, sectionState) => {
+  const normalized = normalizeCodingSection(codingSection);
+  if (!normalized) {
+    return null;
+  }
+
+  const unlocked = Boolean(sectionState?.mcqCompletedAt) || sectionState?.currentSection === 'coding';
+
+  return {
+    ...normalized,
+    unlocked,
+    mcq_completed_at: sectionState?.mcqCompletedAt || null,
+    coding_entered_at: sectionState?.codingEnteredAt || null
+  };
 };
 
 const normalizeSessionTokenValue = (value) => {
@@ -251,6 +407,52 @@ const getStudentTargetMapForHostedExams = async (hostedAssessmentIds = []) => {
       student_id: row.student_id,
       student: row.student || null
     });
+
+    return acc;
+  }, {});
+
+  return { map: mapped, setupRequired: false };
+};
+
+const getAttemptStatsForHostedExams = async (hostedAssessmentIds = []) => {
+  const uniqueIds = [...new Set((hostedAssessmentIds || []).filter(Boolean))];
+
+  if (uniqueIds.length === 0) {
+    return { map: {}, setupRequired: false };
+  }
+
+  const { data, error } = await supabase
+    .from('assessment_attempts')
+    .select('hosted_assessment_id, status')
+    .in('hosted_assessment_id', uniqueIds);
+
+  if (error && isMissingAttemptTableError(error)) {
+    return { map: {}, setupRequired: true };
+  }
+
+  if (error) throw error;
+
+  const mapped = (data || []).reduce((acc, row) => {
+    const hostedAssessmentId = row?.hosted_assessment_id;
+    if (!hostedAssessmentId) return acc;
+
+    if (!acc[hostedAssessmentId]) {
+      acc[hostedAssessmentId] = {
+        started: 0,
+        in_progress: 0,
+        submitted: 0
+      };
+    }
+
+    acc[hostedAssessmentId].started += 1;
+
+    if (row.status === 'submitted' || row.status === 'auto_submitted') {
+      acc[hostedAssessmentId].submitted += 1;
+    }
+
+    if (row.status === 'in_progress') {
+      acc[hostedAssessmentId].in_progress += 1;
+    }
 
     return acc;
   }, {});
@@ -608,6 +810,7 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
       start_time,
       end_time,
       instructions,
+      coding_section,
       assigned_student_ids = []
     } = req.body;
 
@@ -669,6 +872,12 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
       return res.status(400).json({ error: 'Start and end time are required to publish an exam' });
     }
 
+    const { normalized: normalizedCodingSection, error: codingSectionError } = validateCodingSectionInput(coding_section);
+
+    if (codingSectionError) {
+      return res.status(400).json({ error: codingSectionError });
+    }
+
     const finalPublishStatus = resolvePublishStatusByWindow(String(publish_status), parsedEndTime);
     const autoClosedOnCreate = publish_status === 'published' && finalPublishStatus === 'closed';
 
@@ -710,6 +919,7 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
       publish_status: finalPublishStatus,
       start_time: parsedStartTime ? parsedStartTime.toISOString() : null,
       end_time: parsedEndTime ? parsedEndTime.toISOString() : null,
+      coding_section: normalizedCodingSection,
       instructions: instructions ? String(instructions).trim() : null
     };
 
@@ -786,9 +996,25 @@ router.get('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
     const hostedExams = data || [];
     const hostedExamIds = hostedExams.map((exam) => exam.id);
     const { map: targetMap, setupRequired } = await getStudentTargetMapForHostedExams(hostedExamIds);
+    const { map: attemptStatsMap, setupRequired: attemptSetupRequired } = await getAttemptStatsForHostedExams(hostedExamIds);
 
     const enrichedExams = hostedExams.map((exam) => ({
       ...exam,
+      ...(attemptStatsMap[exam.id]
+        ? {
+          attempts_started_count: attemptStatsMap[exam.id].started,
+          attempts_submitted_count: attemptStatsMap[exam.id].submitted,
+          attempts_in_progress_count: attemptStatsMap[exam.id].in_progress,
+          is_locked_for_coding_section_edit: attemptStatsMap[exam.id].started > 0
+        }
+        : {
+          attempts_started_count: 0,
+          attempts_submitted_count: 0,
+          attempts_in_progress_count: 0,
+          is_locked_for_coding_section_edit: false
+        }
+      ),
+      coding_section: normalizeCodingSection(exam.coding_section),
       specific_students: (targetMap[exam.id] || []).map((item) => ({
         id: item.student?.id || item.student_id,
         full_name: item.student?.full_name || null,
@@ -798,7 +1024,7 @@ router.get('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
 
     res.json({
       hostedExams: enrichedExams,
-      ...(setupRequired ? { setupRequired: true } : {})
+      ...(setupRequired || attemptSetupRequired ? { setupRequired: true } : {})
     });
   } catch (error) {
     console.error('List hosted exams error:', error);
@@ -841,6 +1067,7 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
       start_time,
       end_time,
       instructions,
+      coding_section,
       assigned_student_ids
     } = req.body;
 
@@ -951,6 +1178,40 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
       normalizedStudentIds = normalized;
     }
 
+    const codingSectionUpdate = coding_section !== undefined
+      ? validateCodingSectionInput(coding_section)
+      : { normalized: normalizeCodingSection(existingHostedExam.coding_section), error: null };
+
+    if (codingSectionUpdate.error) {
+      return res.status(400).json({ error: codingSectionUpdate.error });
+    }
+
+    const resolvedCodingSection = codingSectionUpdate.normalized;
+    const existingCodingSection = normalizeCodingSection(existingHostedExam.coding_section);
+    const codingSectionChanged = JSON.stringify(resolvedCodingSection || null) !== JSON.stringify(existingCodingSection || null);
+
+    if (codingSectionChanged) {
+      const { count: attemptsStartedCount, error: attemptCountError } = await supabase
+        .from('assessment_attempts')
+        .select('id', { head: true, count: 'exact' })
+        .eq('hosted_assessment_id', id);
+
+      if (attemptCountError && isMissingAttemptTableError(attemptCountError)) {
+        return res.status(503).json({
+          error: 'Assessment attempts module is not initialized yet. Please run migration when DB access is available.',
+          setupRequired: true
+        });
+      }
+
+      if (attemptCountError) throw attemptCountError;
+
+      if (safeInt(attemptsStartedCount, 0) > 0) {
+        return res.status(409).json({
+          error: 'Coding section cannot be changed after student attempts have started for this exam'
+        });
+      }
+    }
+
     const updatePayload = {
       class_id: class_id !== undefined ? (class_id || null) : existingHostedExam.class_id,
       section_id: section_id !== undefined ? (section_id || null) : existingHostedExam.section_id,
@@ -962,6 +1223,7 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
       publish_status: finalPublishStatus,
       start_time: parsedStartTime ? parsedStartTime.toISOString() : null,
       end_time: parsedEndTime ? parsedEndTime.toISOString() : null,
+      coding_section: resolvedCodingSection,
       instructions: instructions !== undefined
         ? (instructions ? String(instructions).trim() : null)
         : existingHostedExam.instructions
@@ -1128,6 +1390,7 @@ router.get('/student/available', verifyToken, hasRole('student'), async (req, re
         publish_status,
         start_time,
         end_time,
+        coding_section,
         class_id,
         section_id,
         zone,
@@ -1181,6 +1444,7 @@ router.get('/student/available', verifyToken, hasRole('student'), async (req, re
 
       return {
         ...exam,
+        coding_section: normalizeCodingSection(exam.coding_section),
         attemptsUsed,
         remainingAttempts: Math.max(0, maxAttempts - attemptsUsed),
         hasInProgressAttempt: Boolean(inProgressAttempt),
@@ -1222,6 +1486,7 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
         publish_status,
         start_time,
         end_time,
+        coding_section,
         instructions,
         template:template_id(id, title, subject, total_marks, passing_percentage, template_data)
       `)
@@ -1309,7 +1574,7 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
           student_id: req.user.id,
           attempt_number: usedAttempts + 1,
           status: 'in_progress',
-          answers: {},
+          answers: applyAttemptSectionState({}, { currentSection: 'mcq' }),
           total_questions: totalQuestions,
           total_marks: configuredTotalMarks
         })
@@ -1322,6 +1587,8 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
     }
 
     const remainingSeconds = getRemainingSeconds(activeAttempt, hostedExam);
+    const sectionState = getAttemptSectionState(activeAttempt.answers);
+    const codingSectionForStudent = sanitizeCodingSectionForStudent(hostedExam.coding_section, sectionState);
 
     if (remainingSeconds <= 0) {
       return res.status(400).json({ error: 'This attempt has already timed out. Please submit it from the attempt page.' });
@@ -1338,7 +1605,8 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
         start_time: hostedExam.start_time,
         end_time: hostedExam.end_time,
         duration_minutes: hostedExam.duration_minutes,
-        max_attempts: hostedExam.max_attempts
+        max_attempts: hostedExam.max_attempts,
+        coding_section: codingSectionForStudent
       },
       attempt: {
         id: activeAttempt.id,
@@ -1346,6 +1614,11 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
         status: activeAttempt.status,
         started_at: activeAttempt.started_at,
         answers: activeAttempt.answers || {},
+        current_section: sectionState.currentSection,
+        section_completion_order: {
+          mcq_completed_at: sectionState.mcqCompletedAt,
+          coding_entered_at: sectionState.codingEnteredAt
+        },
         remaining_seconds: remainingSeconds
       },
       questions: sanitizeQuestionsForStudent(questions)
@@ -1379,6 +1652,7 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
           publish_status,
           start_time,
           end_time,
+          coding_section,
           instructions,
           template:template_id(id, title, subject, total_marks, passing_percentage, template_data)
         )
@@ -1425,6 +1699,8 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
     }
 
     const remainingSeconds = getRemainingSeconds(resolvedAttempt, resolvedAttempt.hosted);
+    const sectionState = getAttemptSectionState(resolvedAttempt.answers);
+    const codingSectionForStudent = sanitizeCodingSectionForStudent(resolvedAttempt.hosted?.coding_section, sectionState);
 
     res.json({
       hostedAssessment: {
@@ -1437,7 +1713,8 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
         start_time: resolvedAttempt.hosted?.start_time,
         end_time: resolvedAttempt.hosted?.end_time,
         duration_minutes: resolvedAttempt.hosted?.duration_minutes,
-        max_attempts: resolvedAttempt.hosted?.max_attempts
+        max_attempts: resolvedAttempt.hosted?.max_attempts,
+        coding_section: codingSectionForStudent
       },
       attempt: {
         id: resolvedAttempt.id,
@@ -1451,6 +1728,11 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
         percentage: resolvedAttempt.percentage,
         correct_count: resolvedAttempt.correct_count,
         total_questions: resolvedAttempt.total_questions,
+        current_section: sectionState.currentSection,
+        section_completion_order: {
+          mcq_completed_at: sectionState.mcqCompletedAt,
+          coding_entered_at: sectionState.codingEnteredAt
+        },
         remaining_seconds: remainingSeconds
       },
       questions: sanitizeQuestionsForStudent(questions)
@@ -1458,6 +1740,97 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
   } catch (error) {
     console.error('Get student attempt error:', error);
     res.status(500).json({ error: getApiErrorMessage(error, 'Failed to fetch attempt details') });
+  }
+});
+
+// Student: mark MCQ section complete and unlock coding section
+router.post('/student/attempts/:attemptId/mark-mcq-complete', verifyToken, hasRole('student'), async (req, res) => {
+  try {
+    const { attemptId } = req.params;
+    const sessionToken = getExamSessionToken(req);
+
+    if (!sessionToken) {
+      return res.status(400).json({ error: 'Session token is required for secure exam session' });
+    }
+
+    const { data: attempt, error: attemptError } = await supabase
+      .from('assessment_attempts')
+      .select(`
+        *,
+        hosted:hosted_assessment_id(
+          id,
+          duration_minutes,
+          coding_section
+        )
+      `)
+      .eq('id', attemptId)
+      .eq('student_id', req.user.id)
+      .single();
+
+    if (attemptError || !attempt) {
+      return res.status(404).json({ error: 'Attempt not found' });
+    }
+
+    if (attempt.status !== 'in_progress') {
+      return res.status(400).json({ error: 'Only in-progress attempts can transition sections' });
+    }
+
+    const codingSection = normalizeCodingSection(attempt.hosted?.coding_section);
+    if (!codingSection) {
+      return res.status(400).json({ error: 'Coding section is not enabled for this assessment' });
+    }
+
+    const activeSessionToken = getAttemptSessionMeta(attempt.answers).token;
+    const hasDifferentSession = Boolean(activeSessionToken && activeSessionToken !== sessionToken);
+
+    if (hasDifferentSession) {
+      return res.status(409).json(buildSessionConflictResponse(
+        'This attempt is active in another browser session. Resume here to safely continue.',
+        attempt.id
+      ));
+    }
+
+    const existingSectionState = getAttemptSectionState(attempt.answers);
+    const nowIso = new Date().toISOString();
+    const answersWithSection = applyAttemptSectionState(attempt.answers, {
+      currentSection: 'coding',
+      mcqCompletedAt: existingSectionState.mcqCompletedAt || nowIso,
+      codingEnteredAt: existingSectionState.codingEnteredAt || nowIso
+    });
+
+    const nextAnswers = applyAttemptSessionMeta(answersWithSection, sessionToken);
+
+    const { data: updatedAttempt, error: updateError } = await supabase
+      .from('assessment_attempts')
+      .update({
+        answers: nextAnswers
+      })
+      .eq('id', attempt.id)
+      .select('*')
+      .single();
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    const nextSectionState = getAttemptSectionState(updatedAttempt.answers);
+
+    res.json({
+      message: 'MCQ section marked complete. Coding section unlocked.',
+      coding_section: sanitizeCodingSectionForStudent(codingSection, nextSectionState),
+      attempt: {
+        id: updatedAttempt.id,
+        current_section: nextSectionState.currentSection,
+        section_completion_order: {
+          mcq_completed_at: nextSectionState.mcqCompletedAt,
+          coding_entered_at: nextSectionState.codingEnteredAt
+        }
+      },
+      remaining_seconds: getRemainingSeconds(updatedAttempt, attempt.hosted)
+    });
+  } catch (error) {
+    console.error('Mark MCQ complete error:', error);
+    res.status(500).json({ error: getApiErrorMessage(error, 'Failed to unlock coding section') });
   }
 });
 
@@ -1482,6 +1855,7 @@ router.post('/student/attempts/:attemptId/submit', verifyToken, hasRole('student
           publish_status,
           start_time,
           end_time,
+          coding_section,
           instructions,
           template:template_id(id, title, subject, total_marks, passing_percentage, template_data)
         )
@@ -1528,11 +1902,30 @@ router.post('/student/attempts/:attemptId/submit', verifyToken, hasRole('student
       attempt.hosted?.template?.total_marks
     );
 
+    const metadataAnswers = Object.fromEntries(
+      Object.entries(mergedAnswers).filter(([key]) => key.startsWith('__'))
+    );
+    const finalAnswers = {
+      ...scoreSummary.normalizedAnswers,
+      ...metadataAnswers
+    };
+
+    const codingSection = normalizeCodingSection(attempt.hosted?.coding_section);
+    if (codingSection) {
+      const nowIso = new Date().toISOString();
+      const sectionState = getAttemptSectionState(finalAnswers);
+      finalAnswers[ATTEMPT_SECTION_META_KEY] = {
+        currentSection: 'coding',
+        mcqCompletedAt: sectionState.mcqCompletedAt || nowIso,
+        codingEnteredAt: sectionState.codingEnteredAt || nowIso
+      };
+    }
+
     const { data: updatedAttempt, error: updateError } = await supabase
       .from('assessment_attempts')
       .update({
         status: submittedStatus,
-        answers: scoreSummary.normalizedAnswers,
+        answers: finalAnswers,
         score: scoreSummary.score,
         total_marks: scoreSummary.totalMarks,
         percentage: scoreSummary.percentage,
@@ -1578,6 +1971,7 @@ router.post('/student/attempts/:attemptId/autosave', verifyToken, hasRole('stude
   try {
     const { attemptId } = req.params;
     const incomingAnswers = req.body?.answers;
+    const incomingCodingSubmissions = req.body?.codingSubmissions;
     const sessionToken = getExamSessionToken(req);
 
     if (!sessionToken) {
@@ -1621,9 +2015,13 @@ router.post('/student/attempts/:attemptId/autosave', verifyToken, hasRole('stude
     }
 
     const safeIncoming = (incomingAnswers && typeof incomingAnswers === 'object') ? incomingAnswers : {};
+    const safeCodingSubmissions = (
+      incomingCodingSubmissions && typeof incomingCodingSubmissions === 'object'
+    ) ? incomingCodingSubmissions : null;
     const mergedAnswers = {
       ...(attempt.answers && typeof attempt.answers === 'object' ? attempt.answers : {}),
-      ...safeIncoming
+      ...safeIncoming,
+      ...(safeCodingSubmissions !== null ? { [CODING_SUBMISSIONS_META_KEY]: safeCodingSubmissions } : {})
     };
 
     const { data: updatedAttempt, error: updateError } = await supabase

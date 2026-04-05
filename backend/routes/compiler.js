@@ -152,6 +152,72 @@ const sendUpstreamFailure = (res, status, payload, fallbackMessage) => {
   });
 };
 
+const buildDeleteChallengeAttempts = ({ apiKey, challengeId }) => {
+  const encodedApiKey = encodeURIComponent(apiKey);
+  const encodedChallengeId = encodeURIComponent(challengeId);
+
+  return [
+    {
+      name: 'delete-by-id',
+      method: 'DELETE',
+      url: `${ONECOMPILER_API_BASE}/v1/challenges/${encodedChallengeId}?access_token=${encodedApiKey}`
+    },
+    {
+      name: 'post-delete-by-id',
+      method: 'POST',
+      url: `${ONECOMPILER_API_BASE}/v1/challenges/delete?access_token=${encodedApiKey}`,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challengeId })
+    },
+    {
+      name: 'post-delete-by-ids',
+      method: 'POST',
+      url: `${ONECOMPILER_API_BASE}/v1/challenges/delete?access_token=${encodedApiKey}`,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challengeIds: [challengeId] })
+    },
+    {
+      name: 'post-delete-suffix',
+      method: 'POST',
+      url: `${ONECOMPILER_API_BASE}/v1/challenges/${encodedChallengeId}/delete?access_token=${encodedApiKey}`,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    }
+  ];
+};
+
+const attemptDeleteChallenge = async ({ apiKey, challengeId }) => {
+  const attempts = buildDeleteChallengeAttempts({ apiKey, challengeId });
+  const failures = [];
+
+  for (const attempt of attempts) {
+    const upstream = await callOneCompiler(attempt);
+
+    if (upstream.ok) {
+      return {
+        ok: true,
+        successfulAttempt: attempt.name,
+        upstream
+      };
+    }
+
+    failures.push({
+      name: attempt.name,
+      status: upstream.status,
+      payload: upstream.payload
+    });
+
+    if (upstream.status === 401 || upstream.status === 403) {
+      break;
+    }
+  }
+
+  return {
+    ok: false,
+    failures
+  };
+};
+
 router.get('/languages', async (req, res) => {
   try {
     const upstream = await callOneCompiler({
@@ -295,6 +361,58 @@ router.get('/challenges/:challengeId', async (req, res) => {
     }
 
     return res.status(500).json({ error: 'Failed to fetch challenge' });
+  }
+});
+
+router.delete('/challenges/:challengeId', async (req, res) => {
+  try {
+    const apiKey = getOneCompilerApiKey();
+
+    if (!apiKey) {
+      return res.status(500).json({ error: 'ONECOMPILER_API_KEY is not configured on server' });
+    }
+
+    const challengeId = String(req.params.challengeId || '').trim();
+
+    if (!challengeId) {
+      return res.status(400).json({ error: 'challengeId is required' });
+    }
+
+    const deleteResult = await attemptDeleteChallenge({ apiKey, challengeId });
+
+    if (!deleteResult.ok) {
+      const failures = deleteResult.failures || [];
+      const deleteEndpointUnavailable = failures.length > 0
+        && failures.every((entry) => [404, 405].includes(entry.status));
+
+      if (deleteEndpointUnavailable) {
+        return res.status(502).json({
+          error: 'Delete challenge is not available from upstream API for this account',
+          attempts: failures.map((entry) => ({ name: entry.name, status: entry.status }))
+        });
+      }
+
+      const preferredFailure = failures.find((entry) => ![404, 405].includes(entry.status)) || failures[0];
+      return res.status(preferredFailure?.status || 500).json({
+        error: getErrorMessageFromUpstream(preferredFailure?.payload, 'Failed to delete challenge'),
+        upstream: preferredFailure?.payload,
+        attempts: failures.map((entry) => ({ name: entry.name, status: entry.status }))
+      });
+    }
+
+    return res.json({
+      status: 'success',
+      message: 'Challenge deleted successfully',
+      challengeId,
+      deletionMethod: deleteResult.successfulAttempt,
+      upstream: deleteResult.upstream?.payload || null
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      return res.status(504).json({ error: 'Challenge delete timed out' });
+    }
+
+    return res.status(500).json({ error: 'Failed to delete challenge' });
   }
 });
 

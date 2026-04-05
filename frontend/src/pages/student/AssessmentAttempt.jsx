@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { FiAlertTriangle, FiCheckCircle, FiClock, FiFlag, FiLock, FiSend, FiShield, FiTarget } from 'react-icons/fi';
+import { FiAlertTriangle, FiCheckCircle, FiClock, FiCode, FiFlag, FiLock, FiSend, FiShield, FiTarget } from 'react-icons/fi';
 import Button from '../../components/ui/Button';
 import Card from '../../components/ui/Card';
 import Modal from '../../components/ui/Modal';
@@ -62,13 +62,26 @@ const AssessmentAttempt = () => {
   const [sessionConflict, setSessionConflict] = useState(null);
   const [resumingHere, setResumingHere] = useState(false);
   const [lastAutoSavedAt, setLastAutoSavedAt] = useState(null);
+  const [currentSection, setCurrentSection] = useState('mcq');
+  const [sectionCompletionOrder, setSectionCompletionOrder] = useState({});
+  const [codingSubmissions, setCodingSubmissions] = useState({});
+  const [selectedCodingChallengeIndex, setSelectedCodingChallengeIndex] = useState(0);
+  const [switchingToCoding, setSwitchingToCoding] = useState(false);
 
   const hasAutoSubmittedRef = useRef(false);
   const sessionTokenRef = useRef(getExamSessionToken());
   const skipNextAutosaveRef = useRef(true);
   const hasBootstrapAttemptRef = useRef(false);
 
-  const buildAutosavePayload = (questionList, currentAnswers, currentSaved, currentMarked) => {
+  const buildAutosavePayload = (
+    questionList,
+    currentAnswers,
+    currentSaved,
+    currentMarked,
+    currentSectionValue,
+    completionOrder,
+    codingSubmissionState
+  ) => {
     const payload = {};
 
     questionList.forEach((question) => {
@@ -78,6 +91,14 @@ const AssessmentAttempt = () => {
 
     payload.__uiSavedResponses = currentSaved;
     payload.__uiMarkedForReview = currentMarked;
+    payload.__sectionMeta = {
+      currentSection: currentSectionValue,
+      mcqCompletedAt: completionOrder?.mcq_completed_at || null,
+      codingEnteredAt: completionOrder?.coding_entered_at || null
+    };
+    payload.__codingSubmissions = (
+      codingSubmissionState && typeof codingSubmissionState === 'object'
+    ) ? codingSubmissionState : {};
 
     return payload;
   };
@@ -98,6 +119,18 @@ const AssessmentAttempt = () => {
     const initialSaved = {};
     const persistedSaved = attempt.answers?.__uiSavedResponses;
     const persistedMarked = attempt.answers?.__uiMarkedForReview;
+    const persistedSectionMeta = attempt.answers?.__sectionMeta;
+    const persistedCodingSubmissions = attempt.answers?.__codingSubmissions;
+    const fallbackSection = persistedSectionMeta?.currentSection === 'coding' ? 'coding' : 'mcq';
+    const resolvedSection = attempt.current_section === 'coding' ? 'coding' : fallbackSection;
+    const resolvedCompletionOrder = {
+      mcq_completed_at: attempt.section_completion_order?.mcq_completed_at
+        || persistedSectionMeta?.mcqCompletedAt
+        || null,
+      coding_entered_at: attempt.section_completion_order?.coding_entered_at
+        || persistedSectionMeta?.codingEnteredAt
+        || null
+    };
 
     questionList.forEach((question) => {
       const key = String(question.index);
@@ -115,6 +148,14 @@ const AssessmentAttempt = () => {
         ? persistedMarked
         : {}
     );
+    setCurrentSection(hostedAssessment?.coding_section?.enabled ? resolvedSection : 'mcq');
+    setSectionCompletionOrder(resolvedCompletionOrder);
+    setCodingSubmissions(
+      persistedCodingSubmissions && typeof persistedCodingSubmissions === 'object'
+        ? persistedCodingSubmissions
+        : {}
+    );
+    setSelectedCodingChallengeIndex(0);
     setTimeLeft(Number(attempt.remaining_seconds || 0));
     skipNextAutosaveRef.current = true;
 
@@ -267,7 +308,15 @@ const AssessmentAttempt = () => {
         await assessmentAPI.autosaveStudentAttempt(
           attemptData.attempt.id,
           {
-            answers: buildAutosavePayload(questions, answers, savedResponses, markedForReview)
+            answers: buildAutosavePayload(
+              questions,
+              answers,
+              savedResponses,
+              markedForReview,
+              currentSection,
+              sectionCompletionOrder,
+              codingSubmissions
+            )
           },
           {
             sessionToken: sessionTokenRef.current
@@ -289,7 +338,18 @@ const AssessmentAttempt = () => {
     }, 350);
 
     return () => clearTimeout(timer);
-  }, [answers, savedResponses, markedForReview, attemptData, submittedSummary, questions, attemptId]);
+  }, [
+    answers,
+    savedResponses,
+    markedForReview,
+    attemptData,
+    submittedSummary,
+    questions,
+    attemptId,
+    currentSection,
+    sectionCompletionOrder,
+    codingSubmissions
+  ]);
 
   const answeredCount = useMemo(() => {
     return questions.filter((question) => Boolean(savedResponses[String(question.index)])).length;
@@ -302,6 +362,35 @@ const AssessmentAttempt = () => {
   const unansweredCount = useMemo(() => Math.max(0, questions.length - answeredCount), [questions.length, answeredCount]);
 
   const currentQuestion = questions[currentIndex] || null;
+  const codingSection = attemptData?.hostedAssessment?.coding_section || null;
+  const codingChallengeIds = useMemo(
+    () => (Array.isArray(codingSection?.challenge_ids) ? codingSection.challenge_ids : []),
+    [codingSection]
+  );
+  const hasCodingSection = Boolean(codingSection?.enabled && codingChallengeIds.length > 0);
+  const isCodingSectionUnlocked = Boolean(codingSection?.unlocked || sectionCompletionOrder?.mcq_completed_at);
+  const currentCodingChallengeId = codingChallengeIds[selectedCodingChallengeIndex] || null;
+  const codingAttemptedCount = useMemo(
+    () => codingChallengeIds.filter((challengeId) => Boolean(codingSubmissions?.[challengeId]?.attempted)).length,
+    [codingChallengeIds, codingSubmissions]
+  );
+
+  useEffect(() => {
+    if (!hasCodingSection && currentSection !== 'mcq') {
+      setCurrentSection('mcq');
+    }
+  }, [hasCodingSection, currentSection]);
+
+  useEffect(() => {
+    if (codingChallengeIds.length === 0 && selectedCodingChallengeIndex !== 0) {
+      setSelectedCodingChallengeIndex(0);
+      return;
+    }
+
+    if (selectedCodingChallengeIndex >= codingChallengeIds.length && codingChallengeIds.length > 0) {
+      setSelectedCodingChallengeIndex(0);
+    }
+  }, [codingChallengeIds, selectedCodingChallengeIndex]);
 
   const setSingleChoice = (questionIndex, optionIndex) => {
     const key = String(questionIndex);
@@ -341,7 +430,15 @@ const AssessmentAttempt = () => {
     try {
       setSubmitting(true);
       const response = await assessmentAPI.submitStudentAttempt(attemptId, {
-        answers,
+        answers: buildAutosavePayload(
+          questions,
+          answers,
+          savedResponses,
+          markedForReview,
+          currentSection,
+          sectionCompletionOrder,
+          codingSubmissions
+        ),
         forceAutoSubmit
       }, {
         sessionToken: sessionTokenRef.current
@@ -364,6 +461,109 @@ const AssessmentAttempt = () => {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const moveToCodingSection = async () => {
+    if (!attemptData?.attempt?.id || !hasCodingSection || switchingToCoding) return;
+
+    const hasUnanswered = unansweredCount > 0;
+    if (hasUnanswered) {
+      const proceed = window.confirm(
+        `You still have ${unansweredCount} unanswered MCQ question(s). Submit MCQ section and continue to coding?`
+      );
+
+      if (!proceed) {
+        return;
+      }
+    }
+
+    try {
+      setSwitchingToCoding(true);
+
+      await assessmentAPI.autosaveStudentAttempt(
+        attemptData.attempt.id,
+        {
+          answers: buildAutosavePayload(
+            questions,
+            answers,
+            savedResponses,
+            markedForReview,
+            currentSection,
+            sectionCompletionOrder,
+            codingSubmissions
+          )
+        },
+        {
+          sessionToken: sessionTokenRef.current
+        }
+      );
+
+      const response = await assessmentAPI.markMcqSectionComplete(
+        attemptData.attempt.id,
+        {},
+        { sessionToken: sessionTokenRef.current }
+      );
+
+      const nextCompletionOrder = response.data?.attempt?.section_completion_order || {
+        mcq_completed_at: new Date().toISOString(),
+        coding_entered_at: new Date().toISOString()
+      };
+
+      setSectionCompletionOrder(nextCompletionOrder);
+      setCurrentSection('coding');
+
+      setAttemptData((prev) => {
+        if (!prev) return prev;
+
+        return {
+          ...prev,
+          hostedAssessment: {
+            ...prev.hostedAssessment,
+            coding_section: response.data?.coding_section || prev.hostedAssessment?.coding_section
+          },
+          attempt: {
+            ...prev.attempt,
+            current_section: 'coding',
+            section_completion_order: nextCompletionOrder
+          }
+        };
+      });
+
+      toast.success('MCQ section submitted. Coding section unlocked.');
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to continue to coding section');
+    } finally {
+      setSwitchingToCoding(false);
+    }
+  };
+
+  const markCurrentCodingChallengeAttempted = () => {
+    if (!currentCodingChallengeId) return;
+
+    setCodingSubmissions((prev) => ({
+      ...prev,
+      [currentCodingChallengeId]: {
+        ...(prev[currentCodingChallengeId] || {}),
+        challengeId: currentCodingChallengeId,
+        attempted: true,
+        attemptedAt: new Date().toISOString()
+      }
+    }));
+
+    toast.success('Coding challenge marked as attempted');
+  };
+
+  const updateCurrentCodingNote = (value) => {
+    if (!currentCodingChallengeId) return;
+
+    setCodingSubmissions((prev) => ({
+      ...prev,
+      [currentCodingChallengeId]: {
+        ...(prev[currentCodingChallengeId] || {}),
+        challengeId: currentCodingChallengeId,
+        note: value
+      }
+    }));
   };
 
   const reEnterFullscreen = async () => {
@@ -516,6 +716,12 @@ const AssessmentAttempt = () => {
             <div className="flex flex-wrap items-center justify-end gap-2 lg:max-w-[70%]">
               <span className="status-badge info">Answered: {answeredCount}/{questions.length}</span>
               <span className="status-badge warning">Review: {markedCount}</span>
+              {hasCodingSection && (
+                <span className={`status-badge ${currentSection === 'coding' ? 'success' : 'info'}`}>
+                  <FiCode className="mr-1 h-3.5 w-3.5" />
+                  {currentSection === 'coding' ? 'Coding Set Active' : 'MCQ Set Active'}
+                </span>
+              )}
               <span className={`status-badge ${timeLeft <= 60 ? 'error' : 'warning'}`}>
                 <FiClock className="mr-1 h-3.5 w-3.5" />
                 {formatTimer(timeLeft)}
@@ -524,18 +730,68 @@ const AssessmentAttempt = () => {
                 <FiLock className="mr-1 h-3.5 w-3.5" />
                 {isFullscreen ? 'Fullscreen Locked' : 'Fullscreen Required'}
               </span>
-              <Button
-                onClick={() => setShowSubmitModal(true)}
-                disabled={submitting}
-                className="px-6 py-2.5 shadow-md"
-              >
-                <FiCheckCircle className="h-4 w-4" />
-                {submitting ? 'Submitting...' : 'Finalize & Submit'}
-              </Button>
+              {hasCodingSection && currentSection === 'mcq' ? (
+                <Button
+                  onClick={moveToCodingSection}
+                  disabled={switchingToCoding}
+                  className="px-6 py-2.5 shadow-md"
+                >
+                  <FiCode className="h-4 w-4" />
+                  {switchingToCoding ? 'Submitting MCQ...' : 'Submit MCQ & Continue Coding'}
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => setShowSubmitModal(true)}
+                  disabled={submitting}
+                  className="px-6 py-2.5 shadow-md"
+                >
+                  <FiCheckCircle className="h-4 w-4" />
+                  {submitting ? 'Submitting...' : 'Finalize & Submit'}
+                </Button>
+              )}
             </div>
           </div>
 
         </div>
+
+        {hasCodingSection && (
+          <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  currentSection === 'mcq'
+                    ? 'border-blue-200 bg-blue-50 text-blue-700'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+                onClick={() => setCurrentSection('mcq')}
+              >
+                Set 1: MCQ
+              </button>
+              <button
+                type="button"
+                className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  currentSection === 'coding'
+                    ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
+                    : isCodingSectionUnlocked
+                      ? 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                }`}
+                onClick={() => {
+                  if (isCodingSectionUnlocked) {
+                    setCurrentSection('coding');
+                  }
+                }}
+                disabled={!isCodingSectionUnlocked}
+              >
+                Set 2: Coding ({codingChallengeIds.length})
+              </button>
+              <span className="ml-auto text-xs text-slate-500">
+                Coding attempted: {codingAttemptedCount}/{codingChallengeIds.length}
+              </span>
+            </div>
+          </div>
+        )}
 
         {!isFullscreen && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
@@ -546,150 +802,245 @@ const AssessmentAttempt = () => {
           </div>
         )}
 
-        <div className="grid min-h-[calc(100vh-190px)] grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <Card className="order-2 flex h-full min-h-105 flex-col lg:order-2">
-            <Card.Header>
-              <div className="flex items-center justify-between">
-                <h2 className="section-title text-base">Questions</h2>
-                <span className="text-xs text-slate-500">{answeredCount}/{questions.length}</span>
-              </div>
-            </Card.Header>
-            <Card.Body className="hide-scrollbar flex-1 overflow-y-auto">
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
-              {questions.map((question, index) => {
-                const key = String(question.index);
-                const isSaved = Boolean(savedResponses[key]);
-                const isMarked = Boolean(markedForReview[key]);
+        {currentSection === 'mcq' ? (
+          <>
+            <div className="grid min-h-[calc(100vh-190px)] grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <Card className="order-2 flex h-full min-h-105 flex-col lg:order-2">
+                <Card.Header>
+                  <div className="flex items-center justify-between">
+                    <h2 className="section-title text-base">Questions</h2>
+                    <span className="text-xs text-slate-500">{answeredCount}/{questions.length}</span>
+                  </div>
+                </Card.Header>
+                <Card.Body className="hide-scrollbar flex-1 overflow-y-auto">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
+                  {questions.map((question, index) => {
+                    const key = String(question.index);
+                    const isSaved = Boolean(savedResponses[key]);
+                    const isMarked = Boolean(markedForReview[key]);
 
-                return (
-                  <button
-                    key={question.index}
-                    type="button"
-                    onClick={() => setCurrentIndex(index)}
-                    className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-sm transition-colors ${
-                      currentIndex === index
-                        ? 'border-blue-300 bg-blue-50 text-blue-700'
-                        : isMarked
-                          ? 'border-amber-300 bg-amber-50 text-amber-700'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    <span className="font-medium">Q{index + 1}</span>
-                    <span className="flex items-center gap-1.5">
-                      {isMarked && <FiFlag className="h-4 w-4 text-amber-600" />}
-                      {isSaved ? <FiCheckCircle className="h-4 w-4 text-green-600" /> : <span className="h-2.5 w-2.5 rounded-full bg-slate-200" />}
-                    </span>
-                  </button>
-                );
-              })}
-              </div>
-            </Card.Body>
-          </Card>
+                    return (
+                      <button
+                        key={question.index}
+                        type="button"
+                        onClick={() => setCurrentIndex(index)}
+                        className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-sm transition-colors ${
+                          currentIndex === index
+                            ? 'border-blue-300 bg-blue-50 text-blue-700'
+                            : isMarked
+                              ? 'border-amber-300 bg-amber-50 text-amber-700'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className="font-medium">Q{index + 1}</span>
+                        <span className="flex items-center gap-1.5">
+                          {isMarked && <FiFlag className="h-4 w-4 text-amber-600" />}
+                          {isSaved ? <FiCheckCircle className="h-4 w-4 text-green-600" /> : <span className="h-2.5 w-2.5 rounded-full bg-slate-200" />}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  </div>
+                </Card.Body>
+              </Card>
 
-          <Card className="order-1 flex h-full min-h-105 flex-col lg:order-1">
-            <Card.Header>
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="section-title text-base">Question {currentIndex + 1} of {questions.length}</h2>
-                <span className="text-xs text-slate-500 capitalize">{currentQuestion?.type} {currentQuestion?.answerMode === 'multiple' ? '(multiple correct)' : ''}</span>
-              </div>
-            </Card.Header>
-            <Card.Body className="hide-scrollbar flex-1 overflow-y-auto">
-              {currentQuestion ? (
-                <div className="space-y-5">
-                  <p className="text-lg font-medium leading-relaxed text-slate-800">{currentQuestion.question}</p>
+              <Card className="order-1 flex h-full min-h-105 flex-col lg:order-1">
+                <Card.Header>
+                  <div className="flex items-center justify-between gap-3">
+                    <h2 className="section-title text-base">Question {currentIndex + 1} of {questions.length}</h2>
+                    <span className="text-xs text-slate-500 capitalize">{currentQuestion?.type} {currentQuestion?.answerMode === 'multiple' ? '(multiple correct)' : ''}</span>
+                  </div>
+                </Card.Header>
+                <Card.Body className="hide-scrollbar flex-1 overflow-y-auto">
+                  {currentQuestion ? (
+                    <div className="space-y-5">
+                      <p className="text-lg font-medium leading-relaxed text-slate-800">{currentQuestion.question}</p>
 
-                  {currentQuestion.type === 'blank' ? (
-                    <input
-                      type="text"
-                      className="form-input text-base"
-                      placeholder="Type your answer"
-                      value={String(answers[String(currentQuestion.index)] || '')}
-                      onChange={(event) => setBlankAnswer(currentQuestion.index, event.target.value)}
-                    />
+                      {currentQuestion.type === 'blank' ? (
+                        <input
+                          type="text"
+                          className="form-input text-base"
+                          placeholder="Type your answer"
+                          value={String(answers[String(currentQuestion.index)] || '')}
+                          onChange={(event) => setBlankAnswer(currentQuestion.index, event.target.value)}
+                        />
+                      ) : (
+                        <div className="space-y-3">
+                          {currentQuestion.options.map((option, optionIndex) => {
+                            const key = String(currentQuestion.index);
+                            const value = answers[key];
+                            const selected = currentQuestion.answerMode === 'multiple'
+                              ? (Array.isArray(value) && value.includes(optionIndex))
+                              : (Number.isInteger(value) && value === optionIndex);
+
+                            return (
+                              <button
+                                key={`${currentQuestion.index}-${optionIndex}`}
+                                type="button"
+                                onClick={() => {
+                                  if (currentQuestion.answerMode === 'multiple') {
+                                    toggleMultipleChoice(currentQuestion.index, optionIndex);
+                                  } else {
+                                    setSingleChoice(currentQuestion.index, optionIndex);
+                                  }
+                                }}
+                                className={`w-full rounded-xl border p-3.5 text-left text-[15px] transition-colors ${
+                                  selected
+                                    ? 'border-blue-300 bg-blue-50 text-blue-800'
+                                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                                }`}
+                              >
+                                <span className="font-medium">{String.fromCharCode(65 + optionIndex)}.</span> {option}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      <div className="rounded-xl border border-slate-100 bg-slate-50 p-2 text-xs text-slate-500">
+                        Use the bottom exam action dock for navigation and answer controls.
+                      </div>
+                    </div>
                   ) : (
-                    <div className="space-y-3">
-                      {currentQuestion.options.map((option, optionIndex) => {
-                        const key = String(currentQuestion.index);
-                        const value = answers[key];
-                        const selected = currentQuestion.answerMode === 'multiple'
-                          ? (Array.isArray(value) && value.includes(optionIndex))
-                          : (Number.isInteger(value) && value === optionIndex);
-
-                        return (
-                          <button
-                            key={`${currentQuestion.index}-${optionIndex}`}
-                            type="button"
-                            onClick={() => {
-                              if (currentQuestion.answerMode === 'multiple') {
-                                toggleMultipleChoice(currentQuestion.index, optionIndex);
-                              } else {
-                                setSingleChoice(currentQuestion.index, optionIndex);
-                              }
-                            }}
-                            className={`w-full rounded-xl border p-3.5 text-left text-[15px] transition-colors ${
-                              selected
-                                ? 'border-blue-300 bg-blue-50 text-blue-800'
-                                : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                            }`}
-                          >
-                            <span className="font-medium">{String.fromCharCode(65 + optionIndex)}.</span> {option}
-                          </button>
-                        );
-                      })}
+                    <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                      <div className="flex items-start gap-2">
+                        <FiAlertTriangle className="mt-0.5 h-4 w-4" />
+                        <p>No question found. Please refresh and try again.</p>
+                      </div>
                     </div>
                   )}
-
-                  <div className="rounded-xl border border-slate-100 bg-slate-50 p-2 text-xs text-slate-500">
-                    Use the bottom exam action dock for navigation and answer controls.
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                  <div className="flex items-start gap-2">
-                    <FiAlertTriangle className="mt-0.5 h-4 w-4" />
-                    <p>No question found. Please refresh and try again.</p>
-                  </div>
-                </div>
-              )}
-            </Card.Body>
-          </Card>
-        </div>
-
-        <div className="fixed bottom-3 left-2 right-2 z-30 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur sm:left-3 sm:right-3 lg:left-4 lg:right-4">
-          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-2 text-xs text-slate-600">
-              <FiShield className="h-4 w-4 text-blue-600" />
-              <span>Exam actions are pinned here for quick access.</span>
+                </Card.Body>
+              </Card>
             </div>
-            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-              <Button
-                onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
-                disabled={currentIndex === 0}
-              >
-                Previous
-              </Button>
-              <Button variant="danger" onClick={clearCurrentResponse}>
-                Clear Response
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={toggleReviewForCurrent}
-                className={currentQuestion && markedForReview[String(currentQuestion.index)] ? 'border-amber-300 bg-amber-50 text-amber-700' : ''}
-              >
-                <FiFlag className="h-4 w-4" />
-                {currentQuestion && markedForReview[String(currentQuestion.index)] ? 'Marked for Review' : 'Mark for Review'}
-              </Button>
-              <Button
-                variant="success"
-                onClick={saveAndNext}
-                disabled={!currentQuestion}
-                className="px-5"
-              >
-                {currentIndex >= questions.length - 1 ? 'Save' : 'Save & Next'}
-              </Button>
+
+            <div className="fixed bottom-3 left-2 right-2 z-30 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur sm:left-3 sm:right-3 lg:left-4 lg:right-4">
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex items-center gap-2 text-xs text-slate-600">
+                  <FiShield className="h-4 w-4 text-blue-600" />
+                  <span>Exam actions are pinned here for quick access.</span>
+                </div>
+                <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                  <Button
+                    onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
+                    disabled={currentIndex === 0}
+                  >
+                    Previous
+                  </Button>
+                  <Button variant="danger" onClick={clearCurrentResponse}>
+                    Clear Response
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={toggleReviewForCurrent}
+                    className={currentQuestion && markedForReview[String(currentQuestion.index)] ? 'border-amber-300 bg-amber-50 text-amber-700' : ''}
+                  >
+                    <FiFlag className="h-4 w-4" />
+                    {currentQuestion && markedForReview[String(currentQuestion.index)] ? 'Marked for Review' : 'Mark for Review'}
+                  </Button>
+                  <Button
+                    variant="success"
+                    onClick={saveAndNext}
+                    disabled={!currentQuestion}
+                    className="px-5"
+                  >
+                    {currentIndex >= questions.length - 1 ? 'Save' : 'Save & Next'}
+                  </Button>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          </>
+        ) : (
+          <>
+            <div className="grid min-h-[calc(100vh-190px)] grid-cols-1 gap-3">
+              <Card>
+                <Card.Header>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="section-title text-base">Coding Challenges</h2>
+                    <span className="text-xs text-slate-500">Attempted {codingAttemptedCount}/{codingChallengeIds.length}</span>
+                  </div>
+                </Card.Header>
+                <Card.Body>
+                  <div className="flex flex-wrap gap-2">
+                    {codingChallengeIds.map((challengeId, index) => {
+                      const attempted = Boolean(codingSubmissions?.[challengeId]?.attempted);
+
+                      return (
+                        <button
+                          key={challengeId}
+                          type="button"
+                          onClick={() => setSelectedCodingChallengeIndex(index)}
+                          className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                            index === selectedCodingChallengeIndex
+                              ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          Challenge {index + 1}{attempted ? ' • Attempted' : ''}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Card.Body>
+              </Card>
+
+              <Card className="flex min-h-[62vh] flex-col overflow-hidden">
+                <Card.Header>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold text-slate-800">Challenge ID: {currentCodingChallengeId || 'N/A'}</h3>
+                    <Button
+                      variant="secondary"
+                      onClick={markCurrentCodingChallengeAttempted}
+                      disabled={!currentCodingChallengeId}
+                    >
+                      Mark Attempted
+                    </Button>
+                  </div>
+                </Card.Header>
+                <Card.Body className="flex-1 space-y-3 overflow-hidden">
+                  {currentCodingChallengeId ? (
+                    <>
+                      <iframe
+                        title={`coding-challenge-${currentCodingChallengeId}`}
+                        src={`/compiler/challenges/run/${encodeURIComponent(currentCodingChallengeId)}?embedded=1`}
+                        className="h-[56vh] w-full rounded-xl border border-slate-200"
+                      />
+
+                      <div>
+                        <label className="form-label">Coding Notes (optional)</label>
+                        <textarea
+                          className="form-input min-h-24"
+                          value={String(codingSubmissions?.[currentCodingChallengeId]?.note || '')}
+                          onChange={(event) => updateCurrentCodingNote(event.target.value)}
+                          placeholder="Write short notes about your approach or edge cases"
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-sm text-slate-500">No coding challenge available for this exam.</p>
+                  )}
+                </Card.Body>
+              </Card>
+            </div>
+
+            <div className="fixed bottom-3 left-2 right-2 z-30 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur sm:left-3 sm:right-3 lg:left-4 lg:right-4">
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex items-center gap-2 text-xs text-slate-600">
+                  <FiShield className="h-4 w-4 text-blue-600" />
+                  <span>Complete coding tasks, then finalize your full assessment.</span>
+                </div>
+                <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                  <Button variant="secondary" onClick={() => setCurrentSection('mcq')}>
+                    Back to MCQ
+                  </Button>
+                  <Button onClick={() => setShowSubmitModal(true)} disabled={submitting}>
+                    <FiCheckCircle className="h-4 w-4" />
+                    {submitting ? 'Submitting...' : 'Finalize & Submit'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
 
         <Modal
           open={Boolean(sessionConflict)}
@@ -761,6 +1112,14 @@ const AssessmentAttempt = () => {
               <p className="mt-1 text-lg font-semibold text-slate-800">{unansweredCount}</p>
             </div>
           </div>
+
+          {hasCodingSection && (
+            <div className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900">
+              <p>
+                Coding challenges attempted: <span className="font-semibold">{codingAttemptedCount}/{codingChallengeIds.length}</span>
+              </p>
+            </div>
+          )}
 
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">

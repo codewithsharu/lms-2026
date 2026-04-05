@@ -114,6 +114,7 @@ export const compilerAPI = {
   listChallenges: (params) => api.get('/compiler/challenges', { params }),
   createChallenge: (payload) => api.post('/compiler/challenges', payload),
   getChallenge: (challengeId) => api.get(`/compiler/challenges/${challengeId}`),
+  deleteChallenge: (challengeId) => api.delete(`/compiler/challenges/${challengeId}`),
   getChallengeStats: (challengeId) => api.get(`/compiler/challenges/${challengeId}/stats`),
   getChallengeStatsSummary: (challengeId) => api.get(`/compiler/challenges/${challengeId}/stats/summary`),
   runCode: (payload) => api.post('/compiler/run', payload),
@@ -152,6 +153,13 @@ export const assessmentAPI = {
   ),
   autosaveStudentAttempt: (attemptId, data = {}, options = {}) => api.post(
     `/assessments/student/attempts/${attemptId}/autosave`,
+    {
+      ...data,
+      sessionToken: options.sessionToken || data.sessionToken
+    }
+  ),
+  markMcqSectionComplete: (attemptId, data = {}, options = {}) => api.post(
+    `/assessments/student/attempts/${attemptId}/mark-mcq-complete`,
     {
       ...data,
       sessionToken: options.sessionToken || data.sessionToken

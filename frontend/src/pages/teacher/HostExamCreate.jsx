@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { FiArrowLeft, FiChevronDown, FiSend } from 'react-icons/fi';
+import { FiArrowLeft, FiChevronDown, FiCode, FiSend } from 'react-icons/fi';
 import Layout from '../../components/Layout';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import InputField from '../../components/ui/InputField';
-import { assessmentAPI, teacherAPI } from '../../services/api';
+import { assessmentAPI, classAPI, compilerAPI, teacherAPI } from '../../services/api';
 
 const SelectMenu = ({ label, value, onChange, options, disabled = false }) => {
   const [open, setOpen] = useState(false);
@@ -72,6 +72,8 @@ const HostExamCreate = () => {
   const [sections, setSections] = useState([]);
   const [assignmentScope, setAssignmentScope] = useState([]);
   const [availableStudents, setAvailableStudents] = useState([]);
+  const [challengeCatalog, setChallengeCatalog] = useState([]);
+  const [challengeSearch, setChallengeSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [hosting, setHosting] = useState(false);
 
@@ -88,7 +90,10 @@ const HostExamCreate = () => {
     publish_status: 'draft',
     start_time: '',
     end_time: '',
-    instructions: ''
+    instructions: '',
+    enable_coding_section: false,
+    coding_challenge_ids: [],
+    coding_time_minutes: 0
   });
 
   const selectedTemplate = templates.find((item) => item.id === formData.template_id) || null;
@@ -146,7 +151,8 @@ const HostExamCreate = () => {
             classId,
             className: assignment.class?.name || 'Unknown Class',
             sectionsMap: new Map(),
-            zonesSet: new Set()
+            zonesSet: new Set(),
+            hasAllSectionsAccess: false
           });
         }
 
@@ -157,6 +163,8 @@ const HostExamCreate = () => {
             id: assignment.section.id,
             name: assignment.section.name || 'Section'
           });
+        } else {
+          entry.hasAllSectionsAccess = true;
         }
 
         if (assignment.zone) {
@@ -191,7 +199,31 @@ const HostExamCreate = () => {
         });
       });
 
-      const scopeList = Array.from(classMap.values()).map((item) => ({
+      const classEntries = Array.from(classMap.values());
+
+      await Promise.all(classEntries.map(async (entry) => {
+        if (!entry.hasAllSectionsAccess) {
+          return;
+        }
+
+        try {
+          const sectionsResponse = await classAPI.getSections(entry.classId);
+          (sectionsResponse.data || []).forEach((section) => {
+            if (!section?.id) {
+              return;
+            }
+
+            entry.sectionsMap.set(section.id, {
+              id: section.id,
+              name: section.name || 'Section'
+            });
+          });
+        } catch {
+          // Keep best-effort inferred sections from assignment payload.
+        }
+      }));
+
+      const scopeList = classEntries.map((item) => ({
         classId: item.classId,
         className: item.className,
         sections: Array.from(item.sectionsMap.values()).sort((a, b) => String(a.name).localeCompare(String(b.name))),
@@ -210,6 +242,13 @@ const HostExamCreate = () => {
           zones: Array.from(student.zones)
         }))
       );
+
+      try {
+        const challengeRes = await compilerAPI.listChallenges({ limit: 150 });
+        setChallengeCatalog(challengeRes.data?.challenges || []);
+      } catch {
+        setChallengeCatalog([]);
+      }
     } catch (error) {
       toast.error(error.response?.data?.error || 'Failed to load hosting data');
     } finally {
@@ -256,6 +295,20 @@ const HostExamCreate = () => {
       return true;
     });
   }, [availableStudents, formData.class_id, formData.section_id, formData.zone]);
+
+  const filteredChallengeCatalog = useMemo(() => {
+    const keyword = String(challengeSearch || '').trim().toLowerCase();
+
+    if (!keyword) {
+      return challengeCatalog;
+    }
+
+    return challengeCatalog.filter((challenge) => {
+      const title = String(challenge.title || '').toLowerCase();
+      const id = String(challenge.id || '').toLowerCase();
+      return title.includes(keyword) || id.includes(keyword);
+    });
+  }, [challengeCatalog, challengeSearch]);
 
   useEffect(() => {
     if (!formData.specific_student_id) return;
@@ -308,11 +361,34 @@ const HostExamCreate = () => {
       return;
     }
 
+    if (formData.enable_coding_section && formData.coding_challenge_ids.length === 0) {
+      toast.error('Select at least one coding challenge when coding section is enabled');
+      return;
+    }
+
     try {
       setHosting(true);
       const response = await assessmentAPI.hostExam({
-        ...formData,
-        assigned_student_ids: formData.specific_student_id ? [formData.specific_student_id] : []
+        template_id: formData.template_id,
+        class_id: formData.class_id || null,
+        section_id: formData.section_id || null,
+        zone: formData.zone || null,
+        duration_minutes: Number(formData.duration_minutes),
+        max_attempts: Number(formData.max_attempts),
+        allow_resume: formData.allow_resume,
+        result_mode: formData.result_mode,
+        publish_status: formData.publish_status,
+        start_time: formData.start_time || null,
+        end_time: formData.end_time || null,
+        instructions: formData.instructions || null,
+        assigned_student_ids: [],
+        coding_section: formData.enable_coding_section
+          ? {
+            enabled: true,
+            challenge_ids: formData.coding_challenge_ids,
+            time_allocation_minutes: Math.max(0, Number(formData.coding_time_minutes) || 0)
+          }
+          : null
       });
       toast.success(response.data?.message || 'Exam hosted successfully');
       navigate('/teacher/assessments/host');
@@ -321,6 +397,18 @@ const HostExamCreate = () => {
     } finally {
       setHosting(false);
     }
+  };
+
+  const toggleCodingChallenge = (challengeId) => {
+    setFormData((prev) => {
+      const exists = prev.coding_challenge_ids.includes(challengeId);
+      return {
+        ...prev,
+        coding_challenge_ids: exists
+          ? prev.coding_challenge_ids.filter((id) => id !== challengeId)
+          : [...prev.coding_challenge_ids, challengeId]
+      };
+    });
   };
 
   return (
@@ -372,7 +460,7 @@ const HostExamCreate = () => {
               <SelectMenu
                 label="Class"
                 value={formData.class_id}
-                onChange={(nextValue) => setFormData({ ...formData, class_id: nextValue, section_id: '', specific_student_id: '' })}
+                onChange={(nextValue) => setFormData({ ...formData, class_id: nextValue, section_id: '' })}
                 options={[
                   { value: '', label: 'Select Assigned Class' },
                   ...classes.map((cls) => ({ value: cls.id, label: cls.name }))
@@ -382,7 +470,7 @@ const HostExamCreate = () => {
               <SelectMenu
                 label="Section"
                 value={formData.section_id}
-                onChange={(nextValue) => setFormData({ ...formData, section_id: nextValue, specific_student_id: '' })}
+                onChange={(nextValue) => setFormData({ ...formData, section_id: nextValue })}
                 disabled={!formData.class_id}
                 options={[
                   { value: '', label: 'All Sections' },
@@ -393,7 +481,7 @@ const HostExamCreate = () => {
               <SelectMenu
                 label="Zone"
                 value={formData.zone}
-                onChange={(nextValue) => setFormData({ ...formData, zone: nextValue, specific_student_id: '' })}
+                onChange={(nextValue) => setFormData({ ...formData, zone: nextValue })}
                 options={[
                   { value: '', label: 'All Zones' },
                   ...((selectedClassScope?.zones?.length > 0
@@ -402,19 +490,6 @@ const HostExamCreate = () => {
                     value: zone,
                     label: `${zone.charAt(0).toUpperCase() + zone.slice(1)}`
                   })))
-                ]}
-              />
-
-              <SelectMenu
-                label="Specific Student"
-                value={formData.specific_student_id}
-                onChange={(nextValue) => setFormData({ ...formData, specific_student_id: nextValue })}
-                options={[
-                  { value: '', label: 'None (use class/section/zone scope)' },
-                  ...filteredStudentOptions.map((student) => ({
-                    value: student.id,
-                    label: `${student.full_name}${student.email ? ` (${student.email})` : ''}`
-                  }))
                 ]}
               />
 
@@ -490,6 +565,102 @@ const HostExamCreate = () => {
                   onChange={(e) => setFormData({ ...formData, instructions: e.target.value })}
                   placeholder="Exam instructions visible to students"
                 />
+              </div>
+
+              <div className="md:col-span-2 rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-white to-slate-50 p-4 lg:p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <label className="inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={formData.enable_coding_section}
+                      onChange={(event) => setFormData((prev) => ({
+                        ...prev,
+                        enable_coding_section: event.target.checked,
+                        coding_challenge_ids: event.target.checked ? prev.coding_challenge_ids : []
+                      }))}
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-200"
+                    />
+                    <FiCode className="h-4 w-4 text-indigo-600" />
+                    Include Coding Section after MCQ
+                  </label>
+                  <span className={`status-badge ${formData.enable_coding_section ? 'success' : 'info'}`}>
+                    {formData.enable_coding_section
+                      ? `${formData.coding_challenge_ids.length} selected`
+                      : 'Disabled'}
+                  </span>
+                </div>
+
+                <p className="mt-1 text-xs text-slate-600">
+                  Students will complete MCQ first, then continue with coding challenges in the same attempt.
+                </p>
+
+                {formData.enable_coding_section && (
+                  <div className="mt-4 space-y-4">
+                    <InputField
+                      label="Search Coding Challenges"
+                      value={challengeSearch}
+                      onChange={(event) => setChallengeSearch(event.target.value)}
+                      placeholder="Search by challenge title or ID"
+                    />
+
+                    <div className="max-h-72 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2">
+                      {filteredChallengeCatalog.length > 0 ? (
+                        <div className="space-y-2">
+                          {filteredChallengeCatalog.map((challenge) => {
+                            const checked = formData.coding_challenge_ids.includes(challenge.id);
+
+                            return (
+                              <label
+                                key={challenge.id}
+                                className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-2.5 transition ${
+                                  checked
+                                    ? 'border-indigo-200 bg-indigo-50/60 shadow-[0_1px_2px_rgba(79,70,229,0.12)]'
+                                    : 'border-transparent hover:border-slate-200 hover:bg-slate-50'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleCodingChallenge(challenge.id)}
+                                  className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-200"
+                                />
+                                <span className="min-w-0">
+                                  <span className="block truncate text-sm font-semibold text-slate-800">
+                                    {challenge.title || 'Untitled Challenge'}
+                                  </span>
+                                  <span
+                                    className={`mt-1 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${
+                                      checked
+                                        ? 'border-indigo-200 bg-indigo-100 text-indigo-700'
+                                        : 'border-slate-200 bg-slate-50 text-slate-500'
+                                    }`}
+                                  >
+                                    ID: {challenge.id}
+                                  </span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="px-2 py-4 text-sm text-slate-500">No coding challenges found.</p>
+                      )}
+                    </div>
+
+                    <p className="text-xs text-slate-600">
+                      Selected coding challenges: <span className="font-semibold text-slate-800">{formData.coding_challenge_ids.length}</span>
+                    </p>
+
+                    <InputField
+                      className="max-w-sm"
+                      label="Coding Time Allocation (minutes, optional)"
+                      type="number"
+                      min="0"
+                      value={formData.coding_time_minutes}
+                      onChange={(event) => setFormData((prev) => ({ ...prev, coding_time_minutes: event.target.value }))}
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="md:col-span-2 flex justify-end">

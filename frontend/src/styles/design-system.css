@@ -254,6 +254,17 @@
   display: none;
 }
 
+.sidebar-nav-scroll {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.sidebar-nav-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 @media (max-width: 1024px) {
   .page-header h1 {
     font-size: 1.5rem;

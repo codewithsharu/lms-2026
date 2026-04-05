@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS hosted_assessments (
   publish_status VARCHAR(20) NOT NULL CHECK (publish_status IN ('draft', 'published', 'closed')),
   start_time TIMESTAMP WITH TIME ZONE,
   end_time TIMESTAMP WITH TIME ZONE,
+  coding_section JSONB,
   instructions TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -146,6 +147,7 @@ ALTER TABLE hosted_assessments ADD COLUMN IF NOT EXISTS allow_resume BOOLEAN;
 ALTER TABLE hosted_assessments ALTER COLUMN allow_resume SET DEFAULT true;
 UPDATE hosted_assessments SET allow_resume = true WHERE allow_resume IS NULL;
 ALTER TABLE hosted_assessments ALTER COLUMN allow_resume SET NOT NULL;
+ALTER TABLE hosted_assessments ADD COLUMN IF NOT EXISTS coding_section JSONB;
 
 -- Hosted exam specific student targets (optional per-exam student whitelist)
 CREATE TABLE IF NOT EXISTS hosted_assessment_student_targets (

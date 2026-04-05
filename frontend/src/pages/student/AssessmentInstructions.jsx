@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { FiAlertTriangle, FiArrowLeft, FiCheckCircle, FiClipboard, FiClock, FiLock, FiPlayCircle } from 'react-icons/fi';
+import { FiAlertTriangle, FiArrowLeft, FiCheckCircle, FiClipboard, FiClock, FiCode, FiLock, FiPlayCircle } from 'react-icons/fi';
 import Layout from '../../components/Layout';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
@@ -192,6 +192,21 @@ const AssessmentInstructions = () => {
               <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
                 <p className="mb-1 font-medium">Teacher Instructions</p>
                 <p>{exam.instructions}</p>
+              </div>
+            )}
+
+            {exam.coding_section?.enabled && (
+              <div className="mt-5 rounded-xl border border-indigo-100 bg-indigo-50 p-4 text-sm text-indigo-900">
+                <p className="mb-1 inline-flex items-center gap-2 font-medium">
+                  <FiCode className="h-4 w-4" />
+                  Two-Set Assessment Flow
+                </p>
+                <p>Set 1: MCQ section</p>
+                <p>Set 2: Coding section ({exam.coding_section.challenge_ids?.length || 0} challenge(s))</p>
+                {Number(exam.coding_section.time_allocation_minutes || 0) > 0 && (
+                  <p className="mt-1 text-xs text-indigo-700">Suggested coding time: {exam.coding_section.time_allocation_minutes} minutes</p>
+                )}
+                <p className="mt-2 text-xs text-indigo-700">After you submit MCQ, coding challenges will unlock in the same exam attempt.</p>
               </div>
             )}
 

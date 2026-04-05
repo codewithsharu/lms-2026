@@ -1,14 +1,9 @@
 import { Link, useLocation } from 'react-router-dom';
+import { buildCompilerPath } from './routePaths';
 
-const navItems = [
-  { to: '/compiler/challenges', label: 'Challenge Browser' },
-  { to: '/compiler/challenges/new', label: 'Challenge Builder' },
-  { to: '/compiler/challenges/run', label: 'Exam Runner' }
-];
-
-const isActivePath = (pathname, target) => {
-  if (target === '/compiler/challenges') {
-    return pathname === '/compiler/challenges';
+const isActivePath = (pathname, target, exact = false) => {
+  if (exact) {
+    return pathname === target;
   }
 
   return pathname === target || pathname.startsWith(`${target}/`);
@@ -16,6 +11,15 @@ const isActivePath = (pathname, target) => {
 
 const CompilerTopBar = ({ title, subtitle, rightNode = null }) => {
   const location = useLocation();
+  const browserPath = buildCompilerPath(location.pathname);
+  const builderPath = buildCompilerPath(location.pathname, '/new');
+  const runnerPath = buildCompilerPath(location.pathname, '/run');
+
+  const navItems = [
+    { to: browserPath, label: 'Challenge Browser', exact: true },
+    { to: builderPath, label: 'Challenge Builder' },
+    { to: runnerPath, label: 'Exam Runner' }
+  ];
 
   return (
     <header className="compiler-topbar">
@@ -30,7 +34,7 @@ const CompilerTopBar = ({ title, subtitle, rightNode = null }) => {
             <Link
               key={item.to}
               to={item.to}
-              className={`compiler-nav-link ${isActivePath(location.pathname, item.to) ? 'active' : ''}`}
+              className={`compiler-nav-link ${isActivePath(location.pathname, item.to, item.exact) ? 'active' : ''}`}
             >
               {item.label}
             </Link>

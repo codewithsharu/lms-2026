@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useLocation, useParams, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import Editor from '@monaco-editor/react';
 import {
@@ -18,6 +18,7 @@ import Alert from '../../components/ui/Alert';
 import { compilerAPI } from '../../services/api';
 import CompilerTopBar from './CompilerTopBar';
 import { DEFAULT_CODE_BY_LANGUAGE, SUPPORTED_LANGUAGES } from './challengePresets';
+import { isTeacherCompilerPath } from './routePaths';
 
 const languageMap = SUPPORTED_LANGUAGES.reduce((acc, item) => {
   acc[item.id] = item;
@@ -156,9 +157,13 @@ const smoothScrollTo = (ref) => {
 };
 
 const ChallengeRunner = () => {
+  const location = useLocation();
   const params = useParams();
   const [searchParams] = useSearchParams();
   const initialChallengeId = params.challengeId || searchParams.get('challengeId') || '';
+  const isEmbeddedMode = ['1', 'true', 'yes'].includes(String(searchParams.get('embedded') || '').toLowerCase());
+  const isTeacherPortalMode = isTeacherCompilerPath(location.pathname);
+  const usePortalPresentation = isTeacherPortalMode || isEmbeddedMode;
 
   const [challengeData, setChallengeData] = useState(null);
   const [challengeError, setChallengeError] = useState('');
@@ -682,13 +687,22 @@ const ChallengeRunner = () => {
   };
 
   return (
-    <div className="compiler-shell">
-      <CompilerTopBar
-        title="Exam Runner"
-        subtitle="Interactive exam workspace with hidden tests and simple custom runner."
-      />
+    <div className={usePortalPresentation ? 'portal-compiler' : 'compiler-shell'}>
+      {!usePortalPresentation && (
+        <CompilerTopBar
+          title="Exam Runner"
+          subtitle="Interactive exam workspace with hidden tests and simple custom runner."
+        />
+      )}
 
-      <main className="compiler-main compiler-main-wide app-page">
+      {isTeacherPortalMode && (
+        <div className="page-header">
+          <h1>Exam Runner</h1>
+          <p>Interactive exam workspace with hidden tests and simple custom runner.</p>
+        </div>
+      )}
+
+      <main className={usePortalPresentation ? 'app-page' : 'compiler-main compiler-main-wide app-page'}>
         {challengeError && <Alert className="mb-3">{challengeError}</Alert>}
 
         <div
