@@ -79,6 +79,7 @@ const HostExamCreate = () => {
 
   const [formData, setFormData] = useState({
     template_id: '',
+    exam_title: '',
     class_id: '',
     section_id: '',
     zone: '',
@@ -92,41 +93,11 @@ const HostExamCreate = () => {
     end_time: '',
     instructions: '',
     enable_coding_section: false,
-    coding_challenge_ids: [],
-    coding_time_minutes: 0
+    coding_challenge_ids: []
   });
 
   const selectedTemplate = templates.find((item) => item.id === formData.template_id) || null;
   const selectedClassScope = assignmentScope.find((item) => item.classId === formData.class_id) || null;
-
-  const planSuggestion = (() => {
-    if (!selectedTemplate) {
-      return {
-        title: 'Select a template to get recommendations',
-        details: 'Best-plan suggestions will appear after selecting a template.'
-      };
-    }
-
-    const questions = Number(selectedTemplate.question_count || 0);
-    if (questions >= 60) {
-      return {
-        title: 'Best Plan: Long Assessment',
-        details: 'Use 90 minutes, 1 attempt, and publish results after end time for better control.'
-      };
-    }
-
-    if (questions >= 30) {
-      return {
-        title: 'Best Plan: Standard Assessment',
-        details: 'Use 60 minutes, 1-2 attempts, and publish results after end time.'
-      };
-    }
-
-    return {
-      title: 'Best Plan: Quick Assessment',
-      details: 'Use 30 minutes, up to 2 attempts, and immediate results for fast feedback.'
-    };
-  })();
 
   const fetchInitialData = async () => {
     try {
@@ -370,6 +341,7 @@ const HostExamCreate = () => {
       setHosting(true);
       const response = await assessmentAPI.hostExam({
         template_id: formData.template_id,
+        exam_title: String(formData.exam_title || '').trim() || null,
         class_id: formData.class_id || null,
         section_id: formData.section_id || null,
         zone: formData.zone || null,
@@ -385,8 +357,7 @@ const HostExamCreate = () => {
         coding_section: formData.enable_coding_section
           ? {
             enabled: true,
-            challenge_ids: formData.coding_challenge_ids,
-            time_allocation_minutes: Math.max(0, Number(formData.coding_time_minutes) || 0)
+            challenge_ids: formData.coding_challenge_ids
           }
           : null
       });
@@ -431,8 +402,16 @@ const HostExamCreate = () => {
 
         <Card>
           <Card.Body>
-            <p className="text-sm font-semibold text-slate-800">{planSuggestion.title}</p>
-            <p className="mt-1 text-sm text-slate-600">{planSuggestion.details}</p>
+            <InputField
+              label="Exam Title (optional)"
+              value={formData.exam_title}
+              maxLength={120}
+              onChange={(event) => setFormData((prev) => ({ ...prev, exam_title: event.target.value }))}
+              placeholder="Leave blank to use template title"
+            />
+            <p className="mt-2 text-xs text-slate-500">
+              This name appears in hosted exam lists and student screens.
+            </p>
           </Card.Body>
         </Card>
 
@@ -650,15 +629,6 @@ const HostExamCreate = () => {
                     <p className="text-xs text-slate-600">
                       Selected coding challenges: <span className="font-semibold text-slate-800">{formData.coding_challenge_ids.length}</span>
                     </p>
-
-                    <InputField
-                      className="max-w-sm"
-                      label="Coding Time Allocation (minutes, optional)"
-                      type="number"
-                      min="0"
-                      value={formData.coding_time_minutes}
-                      onChange={(event) => setFormData((prev) => ({ ...prev, coding_time_minutes: event.target.value }))}
-                    />
                   </div>
                 )}
               </div>

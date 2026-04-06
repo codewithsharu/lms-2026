@@ -1,9 +1,9 @@
 :root {
   --compiler-bg: radial-gradient(circle at 12% 4%, rgba(56, 189, 248, 0.14), transparent 40%), radial-gradient(circle at 82% -6%, rgba(249, 115, 22, 0.14), transparent 46%), #eef3fb;
-  --compiler-navy: #0b2f58;
-  --compiler-navy-soft: #124377;
+  --compiler-navy: var(--brand-900);
+  --compiler-navy-soft: var(--brand-800);
   --compiler-ink: #0f172a;
-  --compiler-border: #d9e3f2;
+  --compiler-border: var(--neutral-200);
   --compiler-panel: rgba(255, 255, 255, 0.92);
 }
 
@@ -44,7 +44,7 @@
 
 .compiler-nav-link {
   border: 1px solid rgba(219, 234, 254, 0.35);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   padding: 6px 12px;
   font-size: 0.78rem;
   font-weight: 600;
@@ -79,7 +79,7 @@
   background: var(--compiler-panel);
   backdrop-filter: blur(4px);
   border: 1px solid var(--compiler-border);
-  border-radius: 18px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
 }
 
@@ -564,8 +564,28 @@
 .runner-question-nav-strip {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   padding-top: 1px;
+  width: min(100%, 266px);
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 #e2e8f0;
+}
+
+.runner-question-nav-strip::-webkit-scrollbar {
+  height: 6px;
+}
+
+.runner-question-nav-strip::-webkit-scrollbar-track {
+  background: #e2e8f0;
+  border-radius: 999px;
+}
+
+.runner-question-nav-strip::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 999px;
 }
 
 .runner-question-nav-chip {
@@ -575,8 +595,10 @@
   color: #334155;
   font-size: 0.72rem;
   font-weight: 700;
-  min-width: 36px;
+  min-width: 44px;
+  flex: 0 0 auto;
   padding: 5px 9px;
+  text-align: center;
   transition: all 110ms ease;
 }
 

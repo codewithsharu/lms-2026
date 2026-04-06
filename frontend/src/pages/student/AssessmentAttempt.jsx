@@ -190,14 +190,73 @@ const buildPreviewQuestions = (count = 20) => {
   });
 };
 
+const normalizeTemplateQuestionsForPreview = (templateData) => {
+  const list = Array.isArray(templateData?.questions) ? templateData.questions : [];
+
+  return list
+    .map((item) => {
+      const type = item?.type === 'blank' ? 'blank' : 'mcq';
+      const question = String(item?.question || '').trim();
+
+      if (!question) {
+        return null;
+      }
+
+      if (type === 'blank') {
+        return {
+          type: 'blank',
+          question,
+          answerMode: 'single',
+          options: []
+        };
+      }
+
+      const options = Array.isArray(item?.options)
+        ? item.options.map((option) => String(option || '').trim())
+        : [];
+
+      if (options.length !== 4 || options.some((option) => !option)) {
+        return null;
+      }
+
+      const rawCorrectOptions = Array.isArray(item?.correctOptions)
+        ? item.correctOptions
+        : (Number.isInteger(item?.correctOption) ? [item.correctOption] : []);
+      const validCorrectOptions = [...new Set(
+        rawCorrectOptions.filter((value) => Number.isInteger(value) && value >= 0 && value <= 3)
+      )];
+
+      if (validCorrectOptions.length === 0) {
+        return null;
+      }
+
+      return {
+        type: 'mcq',
+        question,
+        answerMode: item?.answerMode === 'multiple' || validCorrectOptions.length > 1 ? 'multiple' : 'single',
+        options
+      };
+    })
+    .filter(Boolean)
+    .map((question, index) => ({
+      index: index + 1,
+      ...question
+    }));
+};
+
 const buildPreviewAttemptPayload = ({
   mcqCount,
   timerMinutes,
   enableCoding,
   challengeIds,
-  startSection
+  startSection,
+  examTitle,
+  examSubject,
+  previewQuestions
 }) => {
-  const questions = buildPreviewQuestions(mcqCount);
+  const questions = Array.isArray(previewQuestions) && previewQuestions.length > 0
+    ? previewQuestions
+    : buildPreviewQuestions(mcqCount);
   const startedAt = new Date().toISOString();
   const startInCoding = enableCoding && startSection === 'coding';
 
@@ -224,8 +283,8 @@ const buildPreviewAttemptPayload = ({
       }
     },
     hostedAssessment: {
-      title: 'Assessment',
-      subject: 'General Subject',
+      title: String(examTitle || 'Assessment'),
+      subject: String(examSubject || 'General Subject'),
       result_mode: 'after_end',
       coding_section: {
         enabled: Boolean(enableCoding),
@@ -251,6 +310,9 @@ const AssessmentAttempt = () => {
     const challengeIds = parseChallengeIds(searchParams.get('challenges'));
     const enableCoding = requestedCoding && challengeIds.length > 0;
     const requestedStart = String(searchParams.get('start') || 'mcq').toLowerCase();
+    const examTitle = String(searchParams.get('title') || '').trim() || 'Assessment';
+    const examSubject = String(searchParams.get('subject') || '').trim() || 'General Subject';
+    const templateId = String(searchParams.get('templateId') || '').trim();
 
     return {
       enabled,
@@ -258,7 +320,10 @@ const AssessmentAttempt = () => {
       timerMinutes: clampNumber(searchParams.get('timer'), 5, 300, 60),
       enableCoding,
       challengeIds,
-      startSection: enableCoding && requestedStart === 'coding' ? 'coding' : 'mcq'
+      startSection: enableCoding && requestedStart === 'coding' ? 'coding' : 'mcq',
+      examTitle,
+      examSubject,
+      templateId
     };
   }, [location.pathname, location.search]);
 
@@ -467,28 +532,68 @@ const AssessmentAttempt = () => {
   }, []);
 
   useEffect(() => {
-    if (isPreviewMode) {
-      const previewPayload = buildPreviewAttemptPayload(previewConfig);
+    let cancelled = false;
+
+    const initializeAttempt = async () => {
+      if (isPreviewMode) {
+        let resolvedPreviewConfig = { ...previewConfig };
+
+        if (resolvedPreviewConfig.templateId) {
+          try {
+            const templateResponse = await assessmentAPI.getTemplates();
+            const templates = Array.isArray(templateResponse.data?.templates) ? templateResponse.data.templates : [];
+            const selectedTemplate = templates.find((template) => template.id === resolvedPreviewConfig.templateId) || null;
+
+            if (selectedTemplate) {
+              const previewQuestions = normalizeTemplateQuestionsForPreview(selectedTemplate.template_data);
+
+              if (previewQuestions.length > 0) {
+                resolvedPreviewConfig = {
+                  ...resolvedPreviewConfig,
+                  mcqCount: previewQuestions.length,
+                  examTitle: String(selectedTemplate.title || resolvedPreviewConfig.examTitle || 'Assessment'),
+                  examSubject: String(selectedTemplate.subject || resolvedPreviewConfig.examSubject || 'General Subject'),
+                  previewQuestions
+                };
+              }
+            }
+          } catch (error) {
+            console.error('Failed to load selected template for preview:', error);
+          }
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        const previewPayload = buildPreviewAttemptPayload(resolvedPreviewConfig);
+        hasBootstrapAttemptRef.current = false;
+        hydrateAttemptState(previewPayload);
+        setSessionConflict(null);
+        setShowSubmitModal(false);
+        setShowFullscreenLock(false);
+        setLoading(false);
+        return;
+      }
+
+      const bootstrapPayload = location.state?.attemptBootstrap;
+
+      if (hydrateAttemptState(bootstrapPayload)) {
+        hasBootstrapAttemptRef.current = true;
+        setLoading(false);
+        loadAttempt({ silent: true });
+        return;
+      }
+
       hasBootstrapAttemptRef.current = false;
-      hydrateAttemptState(previewPayload);
-      setSessionConflict(null);
-      setShowSubmitModal(false);
-      setShowFullscreenLock(false);
-      setLoading(false);
-      return;
-    }
+      loadAttempt();
+    };
 
-    const bootstrapPayload = location.state?.attemptBootstrap;
+    initializeAttempt();
 
-    if (hydrateAttemptState(bootstrapPayload)) {
-      hasBootstrapAttemptRef.current = true;
-      setLoading(false);
-      loadAttempt({ silent: true });
-      return;
-    }
-
-    hasBootstrapAttemptRef.current = false;
-    loadAttempt();
+    return () => {
+      cancelled = true;
+    };
   }, [attemptId, isPreviewMode, previewConfig, location.state]);
 
   useEffect(() => {
@@ -670,6 +775,22 @@ const AssessmentAttempt = () => {
     }, 0),
     [codingChallengeIds, codingQuestionTotalByChallenge, codingSubmissions]
   );
+  const mcqTotalQuestionCount = questions.length;
+  const mcqPendingQuestionCount = Math.max(0, mcqTotalQuestionCount - answeredCount);
+  const mcqCompletionPercent = Math.round((answeredCount / Math.max(1, mcqTotalQuestionCount)) * 100);
+  const normalizedCodingTotalQuestionCount = hasCodingSection
+    ? Math.max(codingTotalQuestionCount, codingAttemptedQuestionCount)
+    : 0;
+  const codingPendingQuestionCount = hasCodingSection
+    ? Math.max(0, normalizedCodingTotalQuestionCount - codingAttemptedQuestionCount)
+    : 0;
+  const codingCompletionPercent = hasCodingSection
+    ? Math.round((codingAttemptedQuestionCount / Math.max(1, normalizedCodingTotalQuestionCount)) * 100)
+    : 100;
+  const overallTotalQuestionCount = mcqTotalQuestionCount + (hasCodingSection ? normalizedCodingTotalQuestionCount : 0);
+  const overallAttemptedQuestionCount = answeredCount + (hasCodingSection ? codingAttemptedQuestionCount : 0);
+  const overallCompletionPercent = Math.round((overallAttemptedQuestionCount / Math.max(1, overallTotalQuestionCount)) * 100);
+  const hasPendingUnattemptedQuestions = mcqPendingQuestionCount > 0 || codingPendingQuestionCount > 0;
   const unresolvedCodingTotalChallengeIds = useMemo(
     () => codingChallengeIds.filter((challengeId) => toNonNegativeInteger(codingQuestionTotalByChallenge?.[challengeId], -1) < 0),
     [codingChallengeIds, codingQuestionTotalByChallenge]
@@ -1612,56 +1733,129 @@ const AssessmentAttempt = () => {
             </div>
           )}
         >
-          <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+          <div className="rounded-md border border-slate-300 bg-white p-4">
             <div className="flex items-start gap-3">
-              <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-blue-700">
+              <div className="inline-flex h-9 w-9 items-center justify-center rounded-sm border border-slate-200 bg-slate-50 text-slate-700">
                 <FiShield className="h-4 w-4" />
               </div>
               <div>
-                <p className="text-sm font-medium text-blue-900">Final Exam Review</p>
-                <p className="mt-1 text-sm text-blue-800">Check your summary carefully before final submission.</p>
+                <p className="text-sm font-semibold text-slate-900">Submission Readiness</p>
+                <p className="mt-1 text-sm text-slate-600">Review MCQ and coding progress separately before final submission.</p>
               </div>
             </div>
           </div>
 
-          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="surface-card-muted p-3">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Total Questions</p>
-              <p className="mt-1 text-lg font-semibold text-slate-800">{questions.length}</p>
+          <div className={`mt-4 grid grid-cols-1 gap-3 ${hasCodingSection ? 'lg:grid-cols-2' : ''}`}>
+            <div className="rounded-md border border-slate-300 bg-white">
+              <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3.5 py-2.5">
+                <p className="text-sm font-semibold text-slate-900">MCQ Section</p>
+                <span className={`rounded-sm border px-2 py-0.5 text-[11px] font-semibold ${mcqPendingQuestionCount === 0 ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
+                  {mcqCompletionPercent}%
+                </span>
+              </div>
+              <div className="p-3.5">
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="rounded-sm border border-slate-200 bg-slate-50 px-2 py-1">
+                    <p className="text-[10px] uppercase tracking-wide text-slate-500">Attempted</p>
+                    <p className="mt-0.5 text-sm font-semibold text-slate-800">{answeredCount}</p>
+                  </div>
+                  <div className="rounded-sm border border-slate-200 bg-slate-50 px-2 py-1">
+                    <p className="text-[10px] uppercase tracking-wide text-slate-500">Total</p>
+                    <p className="mt-0.5 text-sm font-semibold text-slate-800">{mcqTotalQuestionCount}</p>
+                  </div>
+                  <div className={`rounded-sm border px-2 py-1 ${mcqPendingQuestionCount > 0 ? 'border-rose-200 bg-rose-50' : 'border-blue-200 bg-blue-50'}`}>
+                    <p className={`text-[10px] uppercase tracking-wide ${mcqPendingQuestionCount > 0 ? 'text-rose-600' : 'text-blue-600'}`}>Pending</p>
+                    <p className={`mt-0.5 text-sm font-semibold ${mcqPendingQuestionCount > 0 ? 'text-rose-700' : 'text-blue-700'}`}>{mcqPendingQuestionCount}</p>
+                  </div>
+                </div>
+                <div className="mt-3 h-1.5 w-full rounded-sm bg-slate-200">
+                  <div
+                    className="h-full rounded-sm bg-blue-700 transition-all"
+                    style={{ width: `${Math.max(0, Math.min(100, mcqCompletionPercent))}%` }}
+                  />
+                </div>
+              </div>
             </div>
-            <div className="surface-card-muted p-3">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Attempted (Saved)</p>
-              <p className="mt-1 text-lg font-semibold text-slate-800">{answeredCount}</p>
-            </div>
-            <div className="surface-card-muted p-3">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Unanswered</p>
-              <p className="mt-1 text-lg font-semibold text-slate-800">{unansweredCount}</p>
-            </div>
+
+            {hasCodingSection && (
+              <div className="rounded-md border border-slate-300 bg-white">
+                <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3.5 py-2.5">
+                  <p className="text-sm font-semibold text-slate-900">Coding Section</p>
+                  <span className={`rounded-sm border px-2 py-0.5 text-[11px] font-semibold ${codingPendingQuestionCount === 0 ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
+                    {codingCompletionPercent}%
+                  </span>
+                </div>
+                <div className="p-3.5">
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="rounded-sm border border-slate-200 bg-slate-50 px-2 py-1">
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500">Attempted</p>
+                      <p className="mt-0.5 text-sm font-semibold text-slate-800">{codingAttemptedQuestionCount}</p>
+                    </div>
+                    <div className="rounded-sm border border-slate-200 bg-slate-50 px-2 py-1">
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500">Total</p>
+                      <p className="mt-0.5 text-sm font-semibold text-slate-800">{normalizedCodingTotalQuestionCount}</p>
+                    </div>
+                    <div className={`rounded-sm border px-2 py-1 ${codingPendingQuestionCount > 0 ? 'border-rose-200 bg-rose-50' : 'border-blue-200 bg-blue-50'}`}>
+                      <p className={`text-[10px] uppercase tracking-wide ${codingPendingQuestionCount > 0 ? 'text-rose-600' : 'text-blue-600'}`}>Pending</p>
+                      <p className={`mt-0.5 text-sm font-semibold ${codingPendingQuestionCount > 0 ? 'text-rose-700' : 'text-blue-700'}`}>{codingPendingQuestionCount}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 h-1.5 w-full rounded-sm bg-slate-200">
+                    <div
+                      className="h-full rounded-sm bg-blue-700 transition-all"
+                      style={{ width: `${Math.max(0, Math.min(100, codingCompletionPercent))}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          {hasCodingSection && (
-            <div className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900">
-              <p>
-                Coding questions attempted: <span className="font-semibold">{codingAttemptedQuestionCount}/{codingTotalQuestionCount}</span>
-              </p>
+          {hasPendingUnattemptedQuestions ? (
+            <div className="mt-3 rounded-md border border-rose-300 bg-rose-50 p-3 text-sm text-rose-800">
+              <div className="flex items-start gap-2">
+                <FiAlertTriangle className="mt-0.5 h-4 w-4" />
+                <div>
+                  <p className="font-semibold">Unattempted questions detected</p>
+                  <p className="mt-1">
+                    MCQ pending: <span className="font-semibold">{mcqPendingQuestionCount}</span>
+                    {hasCodingSection ? (
+                      <>
+                        {' '}• Coding pending: <span className="font-semibold">{codingPendingQuestionCount}</span>
+                      </>
+                    ) : ''}
+                    . Submitting now will finalize these as unanswered.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+              <div className="flex items-start gap-2">
+                <FiCheckCircle className="mt-0.5 h-4 w-4" />
+                <p>All available questions are attempted. You can submit confidently.</p>
+              </div>
             </div>
           )}
 
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            <div className="rounded-md border border-slate-300 bg-white p-3 text-sm text-slate-700">
               <div className="flex items-start gap-2">
-                <FiFlag className="mt-0.5 h-4 w-4" />
+                <FiFlag className="mt-0.5 h-4 w-4 text-amber-600" />
                 <p>Marked for review: <span className="font-semibold">{markedCount}</span></p>
               </div>
             </div>
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+            <div className="rounded-md border border-slate-300 bg-white p-3 text-sm text-slate-700">
               <div className="flex items-start gap-2">
                 <FiTarget className="mt-0.5 h-4 w-4" />
-                <p>Completion status: <span className="font-semibold">{Math.round((answeredCount / Math.max(1, questions.length)) * 100)}%</span></p>
+                <p>
+                  Overall completion: <span className="font-semibold">{overallCompletionPercent}%</span>
+                  {' '}({overallAttemptedQuestionCount}/{overallTotalQuestionCount})
+                </p>
               </div>
             </div>
           </div>
-          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
             After submission, you cannot edit your answers. Fullscreen lock will be released only after submit.
           </div>
         </Modal>

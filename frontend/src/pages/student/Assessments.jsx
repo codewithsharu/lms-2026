@@ -88,8 +88,8 @@ const StudentAssessments = () => {
   const filteredExams = useMemo(() => {
     return exams.filter((exam) => {
       const status = getExamStatus(exam);
-      const title = String(exam.template?.title || '').toLowerCase();
-      const subject = String(exam.template?.subject || '').toLowerCase();
+      const title = String(exam.title || exam.template?.title || '').toLowerCase();
+      const subject = String(exam.subject || exam.template?.subject || '').toLowerCase();
       const keyword = searchTerm.trim().toLowerCase();
 
       const statusMatch = statusFilter === 'all' || status === statusFilter;
@@ -203,8 +203,8 @@ const StudentAssessments = () => {
                       return (
                         <tr key={exam.id}>
                           <td>
-                            <p className="font-medium text-slate-800">{exam.template?.title || 'Untitled Assessment'}</p>
-                            <p className="text-xs text-slate-500">{exam.template?.subject || 'N/A'} • ID: {exam.id.slice(0, 8)}</p>
+                            <p className="font-medium text-slate-800">{exam.title || exam.template?.title || 'Untitled Assessment'}</p>
+                            <p className="text-xs text-slate-500">{exam.subject || exam.template?.subject || 'N/A'} • ID: {exam.id.slice(0, 8)}</p>
                           </td>
                           <td>
                             <span className={`status-badge ${statusBadgeClass[status] || 'info'}`}>

@@ -146,8 +146,8 @@ const StudentDashboard = () => {
                   <tbody>
                     {availableExams.map((exam) => (
                       <tr key={exam.id}>
-                        <td className="font-medium text-slate-800">{exam.template?.title || 'Untitled Assessment'}</td>
-                        <td>{exam.template?.subject || 'N/A'}</td>
+                        <td className="font-medium text-slate-800">{exam.title || exam.template?.title || 'Untitled Assessment'}</td>
+                        <td>{exam.subject || exam.template?.subject || 'N/A'}</td>
                         <td>{exam.duration_minutes} min</td>
                         <td>{exam.max_attempts}</td>
                         <td>

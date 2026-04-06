@@ -1,6 +1,8 @@
 const variantClassMap = {
   primary: 'btn btn-primary',
   secondary: 'btn btn-secondary',
+  tertiary: 'btn btn-tertiary',
+  ghost: 'btn btn-ghost',
   success: 'btn btn-success',
   danger: 'btn btn-danger'
 };

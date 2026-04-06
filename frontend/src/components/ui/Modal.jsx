@@ -14,7 +14,7 @@ const Modal = ({ open, onClose, title, subtitle, children, footer, maxWidth = 'm
             </div>
             <button
               onClick={onClose}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-gray-200 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700"
               aria-label="Close modal"
             >
               <FiX className="h-5 w-5" />

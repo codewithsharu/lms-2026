@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { FiClock, FiCode, FiEdit2, FiPlayCircle, FiPlus, FiRotateCcw, FiSave } from 'react-icons/fi';
+import { FiClock, FiCode, FiEdit2, FiEye, FiPlayCircle, FiPlus, FiRotateCcw, FiSave } from 'react-icons/fi';
 import Layout from '../../components/Layout';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
@@ -114,24 +114,36 @@ const buildStudentScope = (assignments = []) => {
   }));
 };
 
-const getStatusClass = (status) => {
-  if (status === 'published') return 'success';
-  if (status === 'closed') return 'warning';
-  return 'info';
+const extractChallengeQuestionCount = (payload) => {
+  if (Array.isArray(payload?.problems)) {
+    return payload.problems.length;
+  }
+
+  if (Array.isArray(payload?.challenge?.problems)) {
+    return payload.challenge.problems.length;
+  }
+
+  return 0;
 };
 
 const HostExams = () => {
   const navigate = useNavigate();
   const [hostedExams, setHostedExams] = useState([]);
+  const [templates, setTemplates] = useState([]);
   const [assignmentScope, setAssignmentScope] = useState([]);
   const [studentScope, setStudentScope] = useState([]);
   const [challengeCatalog, setChallengeCatalog] = useState([]);
+  const [codingQuestionCountByChallenge, setCodingQuestionCountByChallenge] = useState({});
+  const [codingQuestionCountLoadingByChallenge, setCodingQuestionCountLoadingByChallenge] = useState({});
   const [challengeSearch, setChallengeSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [revokingExamId, setRevokingExamId] = useState(null);
+  const [statusUpdatingExamId, setStatusUpdatingExamId] = useState(null);
   const [selectedExam, setSelectedExam] = useState(null);
   const [saving, setSaving] = useState(false);
   const [editFormData, setEditFormData] = useState({
+    exam_title: '',
+    template_id: '',
     class_id: '',
     section_id: '',
     zone: '',
@@ -145,8 +157,7 @@ const HostExams = () => {
     max_attempts: 1,
     duration_minutes: 60,
     enable_coding_section: false,
-    coding_challenge_ids: [],
-    coding_time_minutes: 0
+    coding_challenge_ids: []
   });
 
   const fetchHostedExams = async () => {
@@ -156,6 +167,13 @@ const HostExams = () => {
         assessmentAPI.getHostedExams(),
         teacherAPI.getAssignedStudents()
       ]);
+
+      try {
+        const templateRes = await assessmentAPI.getTemplates();
+        setTemplates(templateRes.data?.templates || []);
+      } catch {
+        setTemplates([]);
+      }
 
       setHostedExams(hostedRes.data.hostedExams || []);
 
@@ -210,6 +228,70 @@ const HostExams = () => {
     fetchHostedExams();
   }, []);
 
+  useEffect(() => {
+    const challengeIds = Array.from(new Set(
+      (hostedExams || []).flatMap((exam) => (
+        Array.isArray(exam?.coding_section?.challenge_ids)
+          ? exam.coding_section.challenge_ids
+          : []
+      ))
+    )).filter(Boolean);
+
+    const pendingIds = challengeIds.filter((challengeId) => (
+      !Object.prototype.hasOwnProperty.call(codingQuestionCountByChallenge, challengeId)
+      && !codingQuestionCountLoadingByChallenge[challengeId]
+    ));
+
+    if (pendingIds.length === 0) {
+      return;
+    }
+
+    const loadQuestionCounts = async () => {
+      setCodingQuestionCountLoadingByChallenge((prev) => {
+        const next = { ...prev };
+        pendingIds.forEach((challengeId) => {
+          next[challengeId] = true;
+        });
+        return next;
+      });
+
+      const results = await Promise.allSettled(
+        pendingIds.map(async (challengeId) => {
+          const response = await compilerAPI.getChallenge(challengeId);
+          return {
+            challengeId,
+            questionCount: extractChallengeQuestionCount(response.data)
+          };
+        })
+      );
+
+      const countUpdates = {};
+      const loadingUpdates = {};
+
+      results.forEach((result, index) => {
+        const challengeId = pendingIds[index];
+        loadingUpdates[challengeId] = false;
+
+        if (result.status === 'fulfilled') {
+          countUpdates[challengeId] = result.value.questionCount;
+        } else {
+          countUpdates[challengeId] = 0;
+        }
+      });
+
+      setCodingQuestionCountByChallenge((prev) => ({
+        ...prev,
+        ...countUpdates
+      }));
+      setCodingQuestionCountLoadingByChallenge((prev) => ({
+        ...prev,
+        ...loadingUpdates
+      }));
+    };
+
+    loadQuestionCounts();
+  }, [hostedExams, codingQuestionCountByChallenge, codingQuestionCountLoadingByChallenge]);
+
   const selectedClassScope = useMemo(
     () => assignmentScope.find((item) => item.classId === editFormData.class_id) || null,
     [assignmentScope, editFormData.class_id]
@@ -261,6 +343,7 @@ const HostExams = () => {
   }, [challengeCatalog, challengeSearch]);
 
   const isCodingSectionLocked = Boolean(selectedExam?.is_locked_for_coding_section_edit);
+  const isTemplateLocked = Number(selectedExam?.attempts_started_count || 0) > 0;
 
   useEffect(() => {
     if (!editFormData.specific_student_id) return;
@@ -279,6 +362,8 @@ const HostExams = () => {
     setSelectedExam(exam);
     setChallengeSearch('');
     setEditFormData({
+      exam_title: exam.exam_title || '',
+      template_id: exam.template_id || '',
       class_id: exam.class_id || '',
       section_id: exam.section_id || '',
       zone: exam.zone || '',
@@ -292,8 +377,7 @@ const HostExams = () => {
       max_attempts: Number(exam.max_attempts || 1),
       duration_minutes: Number(exam.duration_minutes || 60),
       enable_coding_section: Boolean(codingSection?.enabled),
-      coding_challenge_ids: Array.isArray(codingSection?.challenge_ids) ? codingSection.challenge_ids : [],
-      coding_time_minutes: Number(codingSection?.time_allocation_minutes || 0)
+      coding_challenge_ids: Array.isArray(codingSection?.challenge_ids) ? codingSection.challenge_ids : []
     });
   };
 
@@ -340,10 +424,17 @@ const HostExams = () => {
       return;
     }
 
+    if (!editFormData.template_id) {
+      toast.error('Assessment template is required');
+      return;
+    }
+
     try {
       setSaving(true);
 
       const updatePayload = {
+        exam_title: String(editFormData.exam_title || '').trim() || null,
+        template_id: editFormData.template_id,
         class_id: editFormData.class_id || null,
         section_id: editFormData.section_id || null,
         zone: editFormData.zone || null,
@@ -362,8 +453,7 @@ const HostExams = () => {
         updatePayload.coding_section = editFormData.enable_coding_section
           ? {
             enabled: true,
-            challenge_ids: editFormData.coding_challenge_ids,
-            time_allocation_minutes: Math.max(0, Number(editFormData.coding_time_minutes) || 0)
+            challenge_ids: editFormData.coding_challenge_ids
           }
           : null;
       }
@@ -391,6 +481,68 @@ const HostExams = () => {
           : [...prev.coding_challenge_ids, challengeId]
       };
     });
+  };
+
+  const handleQuickStatusChange = async (exam, nextStatus) => {
+    if (!exam?.id || !nextStatus || nextStatus === exam.publish_status) return;
+
+    const previousStatus = exam.publish_status;
+
+    setHostedExams((prev) => prev.map((item) => (
+      item.id === exam.id
+        ? { ...item, publish_status: nextStatus }
+        : item
+    )));
+
+    try {
+      setStatusUpdatingExamId(exam.id);
+      const response = await assessmentAPI.updateHostedExam(exam.id, { publish_status: nextStatus });
+      toast.success(response.data?.message || `Status updated to ${nextStatus}`);
+      fetchHostedExams();
+    } catch (error) {
+      setHostedExams((prev) => prev.map((item) => (
+        item.id === exam.id
+          ? { ...item, publish_status: previousStatus }
+          : item
+      )));
+      toast.error(error.response?.data?.error || 'Failed to update status');
+    } finally {
+      setStatusUpdatingExamId(null);
+    }
+  };
+
+  const handleOpenStudentPreview = (exam) => {
+    if (!exam?.id) {
+      return;
+    }
+
+    const parsedQuestionCount = Number.parseInt(String(exam.template?.question_count ?? ''), 10);
+    const parsedDuration = Number.parseInt(String(exam.duration_minutes ?? ''), 10);
+    const safeMcqCount = Number.isFinite(parsedQuestionCount) && parsedQuestionCount > 0 ? parsedQuestionCount : 20;
+    const safeDuration = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 60;
+    const challengeIds = Array.isArray(exam.coding_section?.challenge_ids)
+      ? exam.coding_section.challenge_ids.filter(Boolean)
+      : [];
+    const includeCoding = Boolean(exam.coding_section?.enabled && challengeIds.length > 0);
+    const templateId = String(exam.template_id || exam.template?.id || '').trim();
+
+    const params = new URLSearchParams();
+    params.set('preview', '1');
+    if (templateId) {
+      params.set('templateId', templateId);
+    }
+    params.set('mcq', String(safeMcqCount));
+    params.set('timer', String(safeDuration));
+    params.set('coding', includeCoding ? '1' : '0');
+    params.set('start', 'mcq');
+    params.set('title', String(exam.exam_title || exam.template?.title || 'Assessment'));
+    params.set('subject', String(exam.template?.subject || 'General Subject'));
+
+    if (includeCoding) {
+      params.set('challenges', challengeIds.join(','));
+    }
+
+    navigate(`/teacher/assessments/preview-lab/run/${encodeURIComponent(exam.id)}?${params.toString()}`);
   };
 
   const handleRevokeExam = async (exam) => {
@@ -441,7 +593,7 @@ const HostExams = () => {
                 <table>
                   <thead>
                     <tr>
-                      <th>Template</th>
+                      <th>Exam Name</th>
                       <th>Scope</th>
                       <th>Window</th>
                       <th>Duration</th>
@@ -455,13 +607,31 @@ const HostExams = () => {
                     {hostedExams.map((exam) => (
                       <tr key={exam.id}>
                         <td>
-                          <p className="font-medium text-slate-800">{exam.template?.title || 'Template missing'}</p>
-                          <p className="text-xs text-slate-500">ID: {exam.id.slice(0, 8)}</p>
-                          {exam.coding_section?.enabled && (
-                            <p className="text-xs text-indigo-600">
-                              Coding: {exam.coding_section.challenge_ids?.length || 0} challenge(s)
-                            </p>
-                          )}
+                          {(() => {
+                            const mcqQuestionCount = Number.parseInt(String(exam.template?.question_count ?? ''), 10);
+                            const safeMcqQuestionCount = Number.isFinite(mcqQuestionCount) && mcqQuestionCount > 0
+                              ? mcqQuestionCount
+                              : 0;
+                            const codingChallengeIds = Array.isArray(exam.coding_section?.challenge_ids)
+                              ? exam.coding_section.challenge_ids
+                              : [];
+                            const codingQuestionCount = codingChallengeIds.reduce(
+                              (total, challengeId) => total + Number(codingQuestionCountByChallenge[challengeId] || 0),
+                              0
+                            );
+                            const isCodingCountLoading = codingChallengeIds.some(
+                              (challengeId) => Boolean(codingQuestionCountLoadingByChallenge[challengeId])
+                            );
+
+                            return (
+                              <>
+                          <p className="font-medium text-slate-800">{exam.exam_title || exam.template?.title || 'Untitled Exam'}</p>
+                          <p className="text-xs text-slate-500">
+                            MCQ: {safeMcqQuestionCount} • Coding: {isCodingCountLoading ? '...' : codingQuestionCount}
+                          </p>
+                              </>
+                            );
+                          })()}
                         </td>
                         <td>
                           <p>{exam.class?.name || 'All Classes'}</p>
@@ -493,18 +663,41 @@ const HostExams = () => {
                           </span>
                         </td>
                         <td>
-                          <span className={`status-badge ${getStatusClass(exam.publish_status)}`}>
-                            {exam.publish_status}
-                          </span>
+                          <div className="inline-flex flex-col gap-1">
+                            <select
+                              className="form-select min-w-[124px] py-1.5 text-sm capitalize"
+                              value={exam.publish_status}
+                              onChange={(event) => handleQuickStatusChange(exam, event.target.value)}
+                              disabled={statusUpdatingExamId === exam.id}
+                            >
+                              {publishStatusOptions.map((status) => (
+                                <option key={`${exam.id}-${status}`} value={status}>
+                                  {status.charAt(0).toUpperCase() + status.slice(1)}
+                                </option>
+                              ))}
+                            </select>
+                            {statusUpdatingExamId === exam.id && (
+                              <p className="text-[11px] text-slate-500">Updating...</p>
+                            )}
+                          </div>
                         </td>
                         <td>
                           <div className="flex justify-end gap-2">
+                            <Button
+                              variant="secondary"
+                              className="py-1.5! px-3! inline-flex items-center gap-1.5"
+                              onClick={() => handleOpenStudentPreview(exam)}
+                              disabled={statusUpdatingExamId === exam.id || revokingExamId === exam.id}
+                            >
+                              <FiEye className="h-4 w-4" />
+                              Preview
+                            </Button>
                             {exam.publish_status === 'published' && (
                               <Button
                                 variant="secondary"
                                 className="py-1.5! px-3! border-red-200! bg-red-50! text-red-700! hover:bg-red-100! inline-flex items-center gap-1.5"
                                 onClick={() => handleRevokeExam(exam)}
-                                disabled={revokingExamId === exam.id}
+                                disabled={revokingExamId === exam.id || statusUpdatingExamId === exam.id}
                               >
                                 <FiRotateCcw className="h-4 w-4" />
                                 {revokingExamId === exam.id ? 'Revoking...' : 'Revoke'}
@@ -514,6 +707,7 @@ const HostExams = () => {
                               variant="secondary"
                               className="py-1.5! px-3! inline-flex items-center gap-1.5"
                               onClick={() => openEditModal(exam)}
+                              disabled={statusUpdatingExamId === exam.id}
                             >
                               <FiEdit2 className="h-4 w-4" />
                               Edit
@@ -541,7 +735,7 @@ const HostExams = () => {
           open={Boolean(selectedExam)}
           onClose={closeEditModal}
           title="Edit Hosted Exam"
-          subtitle={selectedExam ? selectedExam.template?.title || 'Hosted assessment' : ''}
+          subtitle={selectedExam ? selectedExam.exam_title || selectedExam.template?.title || 'Hosted assessment' : ''}
           maxWidth="max-w-3xl"
           footer={
             <div className="flex justify-end gap-2">
@@ -556,10 +750,37 @@ const HostExams = () => {
           }
         >
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {Boolean(selectedExam?.is_locked_for_coding_section_edit) && (
+            <InputField
+              className="md:col-span-2"
+              label="Exam Title (optional)"
+              value={editFormData.exam_title}
+              maxLength={120}
+              onChange={(event) => setEditFormData((prev) => ({ ...prev, exam_title: event.target.value }))}
+              placeholder="Leave blank to use template title"
+            />
+
+            <SelectField
+              className="md:col-span-2"
+              label="Assessment Template"
+              value={editFormData.template_id}
+              disabled={isTemplateLocked}
+              onChange={(event) => setEditFormData((prev) => ({ ...prev, template_id: event.target.value }))}
+            >
+              <option value="">Select template</option>
+              {editFormData.template_id && !templates.some((item) => item.id === editFormData.template_id) && (
+                <option value={editFormData.template_id}>Current Template ({editFormData.template_id.slice(0, 8)})</option>
+              )}
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {`${template.title || 'Untitled'} (${template.subject || 'N/A'})`}
+                </option>
+              ))}
+            </SelectField>
+
+            {(isTemplateLocked || Boolean(selectedExam?.is_locked_for_coding_section_edit)) && (
               <div className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                Coding section is locked for this exam because student attempts have already started.
-                You can still update non-coding settings.
+                Template and coding section are locked for this exam because student attempts have already started.
+                You can still update non-template, non-coding settings.
               </div>
             )}
 
@@ -770,16 +991,6 @@ const HostExams = () => {
                   <p className="text-xs text-slate-600">
                     Selected coding challenges: <span className="font-semibold text-slate-800">{editFormData.coding_challenge_ids.length}</span>
                   </p>
-
-                  <InputField
-                    className="max-w-sm"
-                    label="Coding Time Allocation (minutes, optional)"
-                    type="number"
-                    min="0"
-                    value={editFormData.coding_time_minutes}
-                    disabled={isCodingSectionLocked}
-                    onChange={(event) => setEditFormData((prev) => ({ ...prev, coding_time_minutes: event.target.value }))}
-                  />
                 </div>
               )}
             </div>

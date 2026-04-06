@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { FiClock, FiCode, FiPlay, FiRefreshCw, FiSearch } from 'react-icons/fi';
+import { FiChevronDown, FiClock, FiCode, FiPlay, FiRefreshCw, FiSearch } from 'react-icons/fi';
 import Layout from '../../components/Layout';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import InputField from '../../components/ui/InputField';
-import { compilerAPI } from '../../services/api';
+import { assessmentAPI, compilerAPI } from '../../services/api';
 
 const clampNumber = (value, min, max, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -30,9 +30,40 @@ const extractProblemCount = (payload) => {
   return 0;
 };
 
+const getTemplateQuestionCount = (template) => {
+  const fromTemplateData = template?.template_data?.questions;
+
+  if (Array.isArray(fromTemplateData)) {
+    return fromTemplateData.length;
+  }
+
+  const fromQuestionCount = Number.parseInt(String(template?.question_count ?? ''), 10);
+  if (Number.isFinite(fromQuestionCount) && fromQuestionCount > 0) {
+    return fromQuestionCount;
+  }
+
+  return 0;
+};
+
+const buildTemplateOptionLabel = (template) => {
+  const title = String(template?.title || 'Untitled');
+  const subject = String(template?.subject || 'N/A');
+  const id = String(template?.id || '');
+
+  if (!id) {
+    return `${title} (${subject})`;
+  }
+
+  return `${title} (${subject}) | ${id}`;
+};
+
 const ExamPreviewLab = () => {
   const navigate = useNavigate();
-  const [mcqCount, setMcqCount] = useState(20);
+  const [templates, setTemplates] = useState([]);
+  const [templateSearch, setTemplateSearch] = useState('');
+  const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [includeCoding, setIncludeCoding] = useState(true);
   const [startSection, setStartSection] = useState('mcq');
@@ -42,6 +73,30 @@ const ExamPreviewLab = () => {
   const [selectedChallengeIds, setSelectedChallengeIds] = useState([]);
   const [questionCountByChallenge, setQuestionCountByChallenge] = useState({});
   const [loadingCountByChallenge, setLoadingCountByChallenge] = useState({});
+  const templateDropdownRef = useRef(null);
+
+  const fetchTemplates = async () => {
+    try {
+      setLoadingTemplates(true);
+      const response = await assessmentAPI.getTemplates();
+      const templateList = Array.isArray(response.data?.templates) ? response.data.templates : [];
+      setTemplates(templateList);
+
+      setSelectedTemplateId((prev) => {
+        if (prev && templateList.some((item) => item.id === prev)) {
+          return prev;
+        }
+
+        return templateList[0]?.id || '';
+      });
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to load templates');
+      setTemplates([]);
+      setSelectedTemplateId('');
+    } finally {
+      setLoadingTemplates(false);
+    }
+  };
 
   const fetchChallenges = async () => {
     try {
@@ -81,8 +136,70 @@ const ExamPreviewLab = () => {
   };
 
   useEffect(() => {
+    fetchTemplates();
     fetchChallenges();
   }, []);
+
+  const filteredTemplateOptions = useMemo(() => {
+    const keyword = String(templateSearch || '').trim().toLowerCase();
+
+    if (!keyword) {
+      return templates;
+    }
+
+    return templates.filter((template) => {
+      const title = String(template.title || '').toLowerCase();
+      const subject = String(template.subject || '').toLowerCase();
+      const id = String(template.id || '').toLowerCase();
+      const optionLabel = buildTemplateOptionLabel(template).toLowerCase();
+
+      return title.includes(keyword)
+        || subject.includes(keyword)
+        || id.includes(keyword)
+        || optionLabel.includes(keyword);
+    });
+  }, [templates, templateSearch]);
+
+  const selectedTemplate = useMemo(() => {
+    return templates.find((template) => template.id === selectedTemplateId) || null;
+  }, [templates, selectedTemplateId]);
+
+  const selectedTemplateLabel = useMemo(() => {
+    if (!selectedTemplate) {
+      return 'Select template';
+    }
+
+    return buildTemplateOptionLabel(selectedTemplate);
+  }, [selectedTemplate]);
+
+  useEffect(() => {
+    if (!templateDropdownOpen) {
+      return undefined;
+    }
+
+    const handleOutsideClick = (event) => {
+      if (!templateDropdownRef.current?.contains(event.target)) {
+        setTemplateDropdownOpen(false);
+        setTemplateSearch('');
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+    };
+  }, [templateDropdownOpen]);
+
+  const handleTemplateSelect = (templateId) => {
+    setSelectedTemplateId(templateId);
+    setTemplateDropdownOpen(false);
+    setTemplateSearch('');
+  };
+
+  const selectedTemplateQuestionCount = useMemo(() => {
+    return getTemplateQuestionCount(selectedTemplate);
+  }, [selectedTemplate]);
 
   const filteredChallenges = useMemo(() => {
     const normalizedSearch = String(challengeSearch || '').trim().toLowerCase();
@@ -204,7 +321,17 @@ const ExamPreviewLab = () => {
   };
 
   const launchPreview = () => {
-    const safeMcq = clampNumber(mcqCount, 1, 120, 20);
+    if (!selectedTemplate) {
+      toast.error('Select a template to preview MCQ section');
+      return;
+    }
+
+    const safeMcq = Math.max(1, getTemplateQuestionCount(selectedTemplate));
+    if (safeMcq <= 0) {
+      toast.error('Selected template has no MCQ questions');
+      return;
+    }
+
     const safeDuration = clampNumber(durationMinutes, 5, 300, 60);
     const effectiveCoding = includeCoding && selectedChallengeIds.length > 0;
 
@@ -215,10 +342,13 @@ const ExamPreviewLab = () => {
 
     const params = new URLSearchParams();
     params.set('preview', '1');
+    params.set('templateId', selectedTemplate.id);
     params.set('mcq', String(safeMcq));
     params.set('timer', String(safeDuration));
     params.set('coding', effectiveCoding ? '1' : '0');
     params.set('start', effectiveCoding && startSection === 'coding' ? 'coding' : 'mcq');
+    params.set('title', String(selectedTemplate.title || 'Assessment'));
+    params.set('subject', String(selectedTemplate.subject || 'General Subject'));
 
     if (effectiveCoding) {
       params.set('challenges', selectedChallengeIds.join(','));
@@ -240,15 +370,61 @@ const ExamPreviewLab = () => {
             <h2 className="section-title text-base">Preview Configuration</h2>
           </Card.Header>
           <Card.Body className="space-y-4">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-              <InputField
-                label="MCQ Question Count"
-                type="number"
-                min={1}
-                max={120}
-                value={mcqCount}
-                onChange={(event) => setMcqCount(event.target.value)}
-              />
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+              <div className="relative" ref={templateDropdownRef}>
+                <label className="form-label">Assessment Template (MCQ Source)</label>
+                <button
+                  type="button"
+                  className="form-select flex w-full items-center justify-between gap-2 text-left"
+                  onClick={() => {
+                    setTemplateDropdownOpen((prev) => !prev);
+                    setTemplateSearch('');
+                  }}
+                  disabled={loadingTemplates}
+                >
+                  <span className={selectedTemplate ? 'text-slate-800' : 'text-slate-400'}>{selectedTemplateLabel}</span>
+                  <FiChevronDown className={`h-4 w-4 text-slate-500 transition-transform ${templateDropdownOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                {templateDropdownOpen && (
+                  <div className="absolute z-20 mt-1 w-full rounded-xl border border-slate-200 bg-white shadow-lg">
+                    <div className="border-b border-slate-100 p-2">
+                      <input
+                        className="form-input"
+                        placeholder="Search template"
+                        value={templateSearch}
+                        onChange={(event) => setTemplateSearch(event.target.value)}
+                        autoFocus
+                      />
+                    </div>
+                    <div className="max-h-64 overflow-y-auto p-1">
+                      {filteredTemplateOptions.length === 0 ? (
+                        <p className="px-2 py-2 text-xs text-slate-500">No templates match your search.</p>
+                      ) : (
+                        filteredTemplateOptions.map((template) => {
+                          const isSelected = selectedTemplateId === template.id;
+
+                          return (
+                            <button
+                              key={template.id}
+                              type="button"
+                              className={`w-full rounded-lg px-2 py-2 text-left transition-colors ${
+                                isSelected
+                                  ? 'bg-indigo-50 text-indigo-700'
+                                  : 'text-slate-700 hover:bg-slate-50'
+                              }`}
+                              onClick={() => handleTemplateSelect(template.id)}
+                            >
+                              <p className="truncate text-sm font-semibold">{template.title || 'Untitled'}</p>
+                              <p className="truncate text-xs text-slate-500">{`${template.subject || 'N/A'} | ${template.id}`}</p>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <InputField
                 label="Timer (minutes)"
@@ -274,6 +450,10 @@ const ExamPreviewLab = () => {
               </div>
             </div>
 
+            <p className="text-xs text-slate-500">
+              MCQ from template: {selectedTemplateQuestionCount} question(s)
+            </p>
+
             <label className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
               <input
                 type="checkbox"
@@ -290,6 +470,10 @@ const ExamPreviewLab = () => {
                   : 'Coding section disabled for this preview'}
               </p>
               <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary" onClick={fetchTemplates} disabled={loadingTemplates}>
+                  <FiRefreshCw className={`h-4 w-4 ${loadingTemplates ? 'animate-spin' : ''}`} />
+                  Refresh Templates
+                </Button>
                 <Button type="button" variant="secondary" onClick={fetchChallenges} disabled={loadingChallenges}>
                   <FiRefreshCw className={`h-4 w-4 ${loadingChallenges ? 'animate-spin' : ''}`} />
                   Refresh Challenges
@@ -398,7 +582,7 @@ const ExamPreviewLab = () => {
             <div className="flex items-start gap-2 text-sm text-blue-800">
               <FiCode className="mt-0.5 h-4 w-4" />
               <p>
-                This lab opens a mock student attempt with configurable MCQ count, timer, and coding challenges.
+                This lab opens a mock student attempt using MCQ from your selected template plus optional coding challenges.
                 No real student data is modified during preview testing.
               </p>
             </div>

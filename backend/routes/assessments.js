@@ -809,6 +809,7 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
       publish_status,
       start_time,
       end_time,
+      exam_title,
       instructions,
       coding_section,
       assigned_student_ids = []
@@ -920,6 +921,7 @@ router.post('/hosted', verifyToken, hasRole('teacher'), async (req, res) => {
       start_time: parsedStartTime ? parsedStartTime.toISOString() : null,
       end_time: parsedEndTime ? parsedEndTime.toISOString() : null,
       coding_section: normalizedCodingSection,
+      exam_title: String(exam_title || '').trim() || null,
       instructions: instructions ? String(instructions).trim() : null
     };
 
@@ -1056,6 +1058,7 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
     }
 
     const {
+      template_id,
       class_id,
       section_id,
       zone,
@@ -1066,6 +1069,7 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
       publish_status,
       start_time,
       end_time,
+      exam_title,
       instructions,
       coding_section,
       assigned_student_ids
@@ -1080,12 +1084,20 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
     const resolvedAllowResume = allow_resume !== undefined
       ? parseBooleanInput(allow_resume, true)
       : existingHostedExam.allow_resume !== false;
+    const resolvedTemplateId = template_id !== undefined
+      ? String(template_id || '').trim()
+      : String(existingHostedExam.template_id || '').trim();
     const resolvedResultMode = result_mode !== undefined
       ? String(result_mode)
       : existingHostedExam.result_mode;
     const resolvedPublishStatus = publish_status !== undefined
       ? String(publish_status)
       : existingHostedExam.publish_status;
+    const templateChanged = resolvedTemplateId !== String(existingHostedExam.template_id || '');
+
+    if (!resolvedTemplateId) {
+      return res.status(400).json({ error: 'template_id is required' });
+    }
 
     if (resolvedDuration <= 0) {
       return res.status(400).json({ error: 'Duration must be greater than 0 minutes' });
@@ -1135,7 +1147,7 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
     const { data: linkedTemplate, error: linkedTemplateError } = await supabase
       .from('assessment_templates')
       .select('id, teacher_id, question_count, template_data')
-      .eq('id', existingHostedExam.template_id)
+      .eq('id', resolvedTemplateId)
       .eq('teacher_id', req.user.id)
       .single();
 
@@ -1190,7 +1202,7 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
     const existingCodingSection = normalizeCodingSection(existingHostedExam.coding_section);
     const codingSectionChanged = JSON.stringify(resolvedCodingSection || null) !== JSON.stringify(existingCodingSection || null);
 
-    if (codingSectionChanged) {
+    if (codingSectionChanged || templateChanged) {
       const { count: attemptsStartedCount, error: attemptCountError } = await supabase
         .from('assessment_attempts')
         .select('id', { head: true, count: 'exact' })
@@ -1206,6 +1218,12 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
       if (attemptCountError) throw attemptCountError;
 
       if (safeInt(attemptsStartedCount, 0) > 0) {
+        if (templateChanged) {
+          return res.status(409).json({
+            error: 'Template cannot be changed after student attempts have started for this exam'
+          });
+        }
+
         return res.status(409).json({
           error: 'Coding section cannot be changed after student attempts have started for this exam'
         });
@@ -1213,6 +1231,7 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
     }
 
     const updatePayload = {
+      template_id: resolvedTemplateId,
       class_id: class_id !== undefined ? (class_id || null) : existingHostedExam.class_id,
       section_id: section_id !== undefined ? (section_id || null) : existingHostedExam.section_id,
       zone: zone !== undefined ? (zone || null) : existingHostedExam.zone,
@@ -1224,6 +1243,9 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
       start_time: parsedStartTime ? parsedStartTime.toISOString() : null,
       end_time: parsedEndTime ? parsedEndTime.toISOString() : null,
       coding_section: resolvedCodingSection,
+      exam_title: exam_title !== undefined
+        ? (String(exam_title || '').trim() || null)
+        : existingHostedExam.exam_title,
       instructions: instructions !== undefined
         ? (instructions ? String(instructions).trim() : null)
         : existingHostedExam.instructions
@@ -1394,6 +1416,7 @@ router.get('/student/available', verifyToken, hasRole('student'), async (req, re
         class_id,
         section_id,
         zone,
+        exam_title,
         template:template_id(id, title, subject, question_count, total_marks, passing_percentage)
       `)
       .in('publish_status', ['published', 'closed'])
@@ -1444,6 +1467,8 @@ router.get('/student/available', verifyToken, hasRole('student'), async (req, re
 
       return {
         ...exam,
+        title: exam.exam_title || exam.template?.title || 'Assessment',
+        subject: exam.template?.subject || 'N/A',
         coding_section: normalizeCodingSection(exam.coding_section),
         attemptsUsed,
         remainingAttempts: Math.max(0, maxAttempts - attemptsUsed),
@@ -1487,6 +1512,7 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
         start_time,
         end_time,
         coding_section,
+        exam_title,
         instructions,
         template:template_id(id, title, subject, total_marks, passing_percentage, template_data)
       `)
@@ -1597,7 +1623,7 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
     res.json({
       hostedAssessment: {
         id: hostedExam.id,
-        title: hostedExam.template?.title || 'Assessment',
+        title: hostedExam.exam_title || hostedExam.template?.title || 'Assessment',
         subject: hostedExam.template?.subject || 'N/A',
         instructions: hostedExam.instructions || '',
         allow_resume: hostedExam.allow_resume !== false,
@@ -1653,6 +1679,7 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
           start_time,
           end_time,
           coding_section,
+          exam_title,
           instructions,
           template:template_id(id, title, subject, total_marks, passing_percentage, template_data)
         )
@@ -1705,7 +1732,7 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
     res.json({
       hostedAssessment: {
         id: resolvedAttempt.hosted?.id,
-        title: resolvedAttempt.hosted?.template?.title || 'Assessment',
+        title: resolvedAttempt.hosted?.exam_title || resolvedAttempt.hosted?.template?.title || 'Assessment',
         subject: resolvedAttempt.hosted?.template?.subject || 'N/A',
         instructions: resolvedAttempt.hosted?.instructions || '',
         allow_resume: resolvedAttempt.hosted?.allow_resume !== false,
@@ -2073,6 +2100,7 @@ router.get('/student/results', verifyToken, hasRole('student'), async (req, res)
         result_mode,
         start_time,
         end_time,
+        exam_title,
         template:template_id(id, title, subject, question_count, total_marks, passing_percentage)
       `)
       .eq('publish_status', 'published')
@@ -2134,7 +2162,7 @@ router.get('/student/results', verifyToken, hasRole('student'), async (req, res)
 
       return {
         examId: exam.id,
-        title: exam.template?.title || 'Assessment',
+        title: exam.exam_title || exam.template?.title || 'Assessment',
         subject: exam.template?.subject || 'N/A',
         result_mode: exam.result_mode,
         start_time: exam.start_time,

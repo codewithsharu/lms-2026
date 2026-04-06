@@ -143,11 +143,11 @@ const AssessmentInstructions = () => {
           <Card.Body className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
             <div className="surface-card-muted p-3">
               <p className="text-xs uppercase tracking-wide text-gray-500">Assessment</p>
-              <p className="mt-1 font-medium text-gray-800">{exam.template?.title || 'Untitled'}</p>
+              <p className="mt-1 font-medium text-gray-800">{exam.title || exam.template?.title || 'Untitled'}</p>
             </div>
             <div className="surface-card-muted p-3">
               <p className="text-xs uppercase tracking-wide text-gray-500">Subject</p>
-              <p className="mt-1 font-medium text-gray-800">{exam.template?.subject || 'N/A'}</p>
+              <p className="mt-1 font-medium text-gray-800">{exam.subject || exam.template?.subject || 'N/A'}</p>
             </div>
             <div className="surface-card-muted p-3">
               <p className="text-xs uppercase tracking-wide text-gray-500">Duration</p>
