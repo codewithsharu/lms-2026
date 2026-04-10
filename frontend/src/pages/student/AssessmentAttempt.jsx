@@ -111,6 +111,20 @@ const normalizeAttemptedQuestionIndexes = (value) => {
   ).sort((left, right) => left - right);
 };
 
+const normalizeQuestionScores = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => Number(entry))
+    .map((entry) => (Number.isFinite(entry) && entry > 0 ? Number(entry.toFixed(2)) : 1));
+};
+
+const sumQuestionScores = (scores = []) => Number(
+  (scores || []).reduce((sum, score) => sum + Number(score || 0), 0).toFixed(2)
+);
+
 const getCodingSubmissionAttemptedCount = (submission) => {
   if (!submission || typeof submission !== 'object') {
     return 0;
@@ -896,6 +910,13 @@ const AssessmentAttempt = () => {
         toNonNegativeInteger(payload.attemptedQuestionCount, 0)
       );
       const incomingTotal = toNonNegativeInteger(payload.totalQuestionCount, 0);
+      const incomingQuestionScores = normalizeQuestionScores(payload.questionScores);
+      const incomingTotalPossibleScore = Number(payload.totalPossibleScore);
+      const incomingPassedIndexesRaw = normalizeAttemptedQuestionIndexes(payload.passedQuestionIndexes);
+      const incomingPassedCountRaw = Math.max(
+        incomingPassedIndexesRaw.length,
+        toNonNegativeInteger(payload.passedQuestionCount, 0)
+      );
 
       setCodingSubmissions((prev) => {
         const previousState = prev && typeof prev === 'object' ? prev : {};
@@ -914,6 +935,30 @@ const AssessmentAttempt = () => {
           incomingTotal
         );
 
+        const resolvedQuestionScores = incomingQuestionScores.length > 0
+          ? incomingQuestionScores
+          : normalizeQuestionScores(previousEntry.questionScores);
+
+        let resolvedPassedIndexes = incomingPassedIndexesRaw;
+        if (payload.allTestCasesPassed && resolvedQuestionScores.length > 0) {
+          resolvedPassedIndexes = resolvedQuestionScores.map((_, index) => index);
+        }
+
+        if (resolvedPassedIndexes.length === 0 && incomingPassedCountRaw > 0 && resolvedQuestionScores.length > 0) {
+          resolvedPassedIndexes = Array.from({ length: Math.min(incomingPassedCountRaw, resolvedQuestionScores.length) }, (_, index) => index);
+        }
+
+        const resolvedPassedCount = Math.max(
+          resolvedPassedIndexes.length,
+          incomingPassedCountRaw
+        );
+
+        const resolvedTotalPossibleScore = Number.isFinite(incomingTotalPossibleScore) && incomingTotalPossibleScore > 0
+          ? Number(incomingTotalPossibleScore.toFixed(2))
+          : (resolvedQuestionScores.length > 0
+            ? sumQuestionScores(resolvedQuestionScores)
+            : Number(previousEntry.totalPossibleScore || 0));
+
         return {
           ...previousState,
           [challengeId]: {
@@ -922,6 +967,14 @@ const AssessmentAttempt = () => {
             attemptedQuestionIndexes: mergedIndexes,
             attemptedQuestionCount: mergedAttempted,
             totalQuestionCount: mergedTotal,
+            passedQuestionIndexes: resolvedPassedIndexes,
+            passedQuestionCount: resolvedPassedCount,
+            allTestCasesPassed: Boolean(
+              payload.allTestCasesPassed
+              || (resolvedQuestionScores.length > 0 && resolvedPassedIndexes.length === resolvedQuestionScores.length)
+            ),
+            questionScores: resolvedQuestionScores,
+            totalPossibleScore: resolvedTotalPossibleScore,
             updatedAt: new Date().toISOString()
           }
         };

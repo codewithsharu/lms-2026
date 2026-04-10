@@ -8,11 +8,10 @@ import InputField from '../../components/ui/InputField';
 import Alert from '../../components/ui/Alert';
 import { compilerAPI } from '../../services/api';
 import CompilerTopBar from './CompilerTopBar';
-import { CHALLENGE_PRESETS, SUPPORTED_LANGUAGES } from './challengePresets';
+import { SUPPORTED_LANGUAGES } from './challengePresets';
 import { buildCompilerPath, isTeacherCompilerPath } from './routePaths';
 
 const DIFFICULTY_OPTIONS = ['easy', 'medium', 'hard'];
-const DEMO_PRESET = CHALLENGE_PRESETS[0];
 
 const firstTruthyString = (values = []) => {
   for (const value of values) {
@@ -59,13 +58,21 @@ const createEmptyTestCase = (index) => ({
 });
 
 const createEmptyQuestion = () => ({
-  title: 'New Question',
-  markdown: 'Write your problem statement here.',
+  title: '',
+  markdown: '',
   score: 1,
   difficultyLevel: 'easy',
   supportedLanguages: ['python', 'java', 'c', 'cpp'],
   ignoreCase: true,
-  validations: [createEmptyTestCase(1)]
+  validations: []
+});
+
+const createEmptyChallengeForm = () => ({
+  title: '',
+  markdown: '',
+  tagsText: '',
+  visibility: 'unlisted',
+  questions: [createEmptyQuestion()]
 });
 
 const buildFormFromPayload = (payload) => {
@@ -83,10 +90,10 @@ const buildFormFromPayload = (payload) => {
               output: String(validation?.output ?? '')
             }))
             .filter((entry) => entry.label || entry.input || entry.output)
-        : [createEmptyTestCase(1)];
+        : [];
 
       return {
-        title: String(problem?.title || 'Untitled Question'),
+        title: String(problem?.title || ''),
         markdown: String(problem?.markdown || ''),
         score: Number(problem?.properties?.score || 1),
         difficultyLevel: String(problem?.properties?.difficultyLevel || 'easy'),
@@ -94,7 +101,7 @@ const buildFormFromPayload = (payload) => {
           ? codeOptions.supportedLanguages.map((value) => String(value))
           : ['python', 'java', 'c', 'cpp'],
         ignoreCase: codeOptions.ignoreCase !== false,
-        validations: validations.length > 0 ? validations : [createEmptyTestCase(1)]
+        validations: validations
       };
     })
     : [createEmptyQuestion()];
@@ -118,8 +125,8 @@ const buildPayloadFromForm = (formState) => {
 
   return {
     challenge: {
-      title: String(formState.title || '').trim() || 'Untitled Challenge',
-      markdown: String(formState.markdown || '').trim() || 'Solve the given questions.',
+      title: String(formState.title || '').trim(),
+      markdown: String(formState.markdown || '').trim(),
       tags,
       visibility: String(formState.visibility || 'unlisted'),
       properties: {}
@@ -135,8 +142,8 @@ const buildPayloadFromForm = (formState) => {
         .filter((validation) => validation.output.length > 0 || validation.input.length > 0);
 
       return {
-        title: String(question.title || '').trim() || 'Untitled Question',
-        markdown: String(question.markdown || '').trim() || 'No statement provided.',
+        title: String(question.title || '').trim(),
+        markdown: String(question.markdown || '').trim(),
         properties: {
           problemType: 'code',
           score: Number(question.score || 1),
@@ -205,8 +212,8 @@ const ChallengeCreator = () => {
   const [searchParams] = useSearchParams();
   const isPortalMode = isTeacherCompilerPath(location.pathname);
   const sourceChallengeId = String(searchParams.get('sourceChallengeId') || '').trim();
-  const [formState, setFormState] = useState(() => buildFormFromPayload(DEMO_PRESET.payload));
-  const [jsonInput, setJsonInput] = useState(() => JSON.stringify(DEMO_PRESET.payload, null, 2));
+  const [formState, setFormState] = useState(() => createEmptyChallengeForm());
+  const [jsonInput, setJsonInput] = useState(() => JSON.stringify(buildPayloadFromForm(createEmptyChallengeForm()), null, 2));
   const [jsonError, setJsonError] = useState('');
   const [sourceLoadError, setSourceLoadError] = useState('');
   const [loadingSourceChallenge, setLoadingSourceChallenge] = useState(false);
@@ -571,7 +578,14 @@ const ChallengeCreator = () => {
                       type="number"
                       min="1"
                       value={question.score}
-                      onChange={(event) => updateQuestionField(questionIndex, 'score', Number(event.target.value || 1))}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        updateQuestionField(
+                          questionIndex,
+                          'score',
+                          nextValue === '' ? '' : Number(nextValue)
+                        );
+                      }}
                     />
                   </div>
 
