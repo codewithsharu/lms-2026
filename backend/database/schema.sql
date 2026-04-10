@@ -175,7 +175,7 @@ CREATE TABLE IF NOT EXISTS assessment_attempts (
   total_questions INTEGER DEFAULT 0,
   started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   submitted_at TIMESTAMP WITH TIME ZONE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), 
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   UNIQUE(hosted_assessment_id, student_id, attempt_number)
 );

@@ -32,6 +32,82 @@ const EXAM_SESSION_HEADER = 'x-exam-session-token';
 const EXAM_SESSION_META_KEY = '__sessionMeta';
 const ATTEMPT_SECTION_META_KEY = '__sectionMeta';
 const CODING_SUBMISSIONS_META_KEY = '__codingSubmissions';
+const ONECOMPILER_API_BASE = 'https://api.onecompiler.com';
+const ONECOMPILER_TIMEOUT_MS = Number.parseInt(process.env.ONECOMPILER_TIMEOUT_MS || '25000', 10);
+
+const getOneCompilerApiKey = () => {
+  const candidates = [
+    process.env.ONECOMPILER_API_KEY,
+    process.env.ONE_COMPILER_API_KEY,
+    process.env.ONECOMPILER_ACCESS_TOKEN,
+    process.env.ONECOMPILER_KEY
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  return '';
+};
+
+const readJsonOrText = async (response) => {
+  const text = await response.text();
+
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+};
+
+const callOneCompiler = async ({ url, method = 'GET', headers = {}, body }) => {
+  const controller = new AbortController();
+  const timeoutMs = Number.isFinite(ONECOMPILER_TIMEOUT_MS) ? ONECOMPILER_TIMEOUT_MS : 25000;
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body,
+      signal: controller.signal
+    });
+
+    const payload = await readJsonOrText(response);
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      payload
+    };
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+};
+
+const normalizeIndexList = (rawValue) => {
+  if (!Array.isArray(rawValue)) {
+    return [];
+  }
+
+  return Array.from(new Set(
+    rawValue
+      .map((entry) => safeInt(entry, -1))
+      .filter((entry) => Number.isFinite(entry) && entry >= 0)
+  )).sort((left, right) => left - right);
+};
+
+const normalizePositiveMarks = (value, fallback = 1) => {
+  const parsed = safeNumber(value, fallback);
+  const safe = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  return Number(safe.toFixed(2));
+};
 
 const safeInt = (value, fallback) => {
   const parsed = Number.parseInt(value, 10);
@@ -479,7 +555,8 @@ const normalizeQuestionList = (templateData) => {
           type: 'blank',
           question,
           options: ['', '', '', ''],
-          blankAnswer
+          blankAnswer,
+          marks: normalizePositiveMarks(item?.marks ?? item?.score ?? item?.points, 1)
         };
       }
 
@@ -502,7 +579,8 @@ const normalizeQuestionList = (templateData) => {
         question,
         options,
         answerMode: item?.answerMode === 'multiple' || correctOptions.length > 1 ? 'multiple' : 'single',
-        correctOptions
+        correctOptions,
+        marks: normalizePositiveMarks(item?.marks ?? item?.score ?? item?.points, 1)
       };
     })
     .filter(Boolean);
@@ -594,36 +672,279 @@ const isAnswerCorrect = (question, normalizedAnswer) => {
   return Number(normalizedAnswer) === Number(question.correctOptions[0]);
 };
 
+const roundToTwo = (value) => Number(safeNumber(value, 0).toFixed(2));
+
+const normalizeQuestionScoreList = (rawValue) => {
+  if (!Array.isArray(rawValue)) {
+    return [];
+  }
+
+  return rawValue
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isFinite(entry) && entry > 0)
+    .map((entry) => Number(entry.toFixed(2)));
+};
+
+const sumScoreList = (scores = []) => roundToTwo(
+  scores.reduce((sum, score) => sum + safeNumber(score, 0), 0)
+);
+
+const getCodingSubmissionMap = (answers) => {
+  if (!answers || typeof answers !== 'object') {
+    return {};
+  }
+
+  const submissions = answers[CODING_SUBMISSIONS_META_KEY];
+  if (!submissions || typeof submissions !== 'object' || Array.isArray(submissions)) {
+    return {};
+  }
+
+  return Object.entries(submissions).reduce((accumulator, [challengeId, entry]) => {
+    const normalizedChallengeId = String(challengeId || '').trim();
+
+    if (!normalizedChallengeId || !entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return accumulator;
+    }
+
+    accumulator[normalizedChallengeId] = entry;
+    return accumulator;
+  }, {});
+};
+
+const normalizeChallengeProblemList = (payload) => {
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+
+  if (Array.isArray(payload.problems)) {
+    return payload.problems;
+  }
+
+  if (Array.isArray(payload.challenge?.problems)) {
+    return payload.challenge.problems;
+  }
+
+  return [];
+};
+
+const extractChallengeScoreProfile = (payload) => {
+  const problems = normalizeChallengeProblemList(payload);
+  const questionScores = problems.map((problem) => (
+    normalizePositiveMarks(problem?.properties?.score ?? problem?.score ?? problem?.points, 1)
+  ));
+
+  return {
+    questionScores,
+    totalPossibleScore: sumScoreList(questionScores),
+    questionCount: questionScores.length
+  };
+};
+
+const fetchChallengeScoreProfile = async (challengeId, apiKey) => {
+  if (!challengeId || !apiKey) {
+    return null;
+  }
+
+  try {
+    const upstream = await callOneCompiler({
+      url: `${ONECOMPILER_API_BASE}/v1/challenges/${encodeURIComponent(challengeId)}?access_token=${encodeURIComponent(apiKey)}`
+    });
+
+    if (!upstream.ok) {
+      return null;
+    }
+
+    return extractChallengeScoreProfile(upstream.payload);
+  } catch {
+    return null;
+  }
+};
+
+const calculateCodingChallengeSummary = (submission, fallbackProfile) => {
+  const safeSubmission = submission && typeof submission === 'object' && !Array.isArray(submission)
+    ? submission
+    : {};
+  const fallbackScores = normalizeQuestionScoreList(fallbackProfile?.questionScores);
+  const submissionScores = normalizeQuestionScoreList(safeSubmission.questionScores);
+  const resolvedQuestionScores = submissionScores.length > 0 ? submissionScores : fallbackScores;
+
+  const submissionTotalPossibleScore = safeNumber(safeSubmission.totalPossibleScore, 0);
+  const fallbackTotalPossibleScore = safeNumber(fallbackProfile?.totalPossibleScore, 0);
+  let totalPossibleScore = 0;
+
+  if (submissionTotalPossibleScore > 0) {
+    totalPossibleScore = roundToTwo(submissionTotalPossibleScore);
+  } else if (fallbackTotalPossibleScore > 0) {
+    totalPossibleScore = roundToTwo(fallbackTotalPossibleScore);
+  } else if (resolvedQuestionScores.length > 0) {
+    totalPossibleScore = sumScoreList(resolvedQuestionScores);
+  }
+
+  let passedQuestionIndexes = normalizeIndexList(safeSubmission.passedQuestionIndexes);
+  const allTestCasesPassedFlag = parseBooleanInput(safeSubmission.allTestCasesPassed, false);
+
+  if (allTestCasesPassedFlag && resolvedQuestionScores.length > 0) {
+    passedQuestionIndexes = Array.from({ length: resolvedQuestionScores.length }, (_, index) => index);
+  }
+
+  const hintedPassedCount = Math.max(
+    passedQuestionIndexes.length,
+    safeInt(safeSubmission.passedQuestionCount, 0)
+  );
+
+  if (passedQuestionIndexes.length === 0 && hintedPassedCount > 0 && resolvedQuestionScores.length > 0) {
+    const inferredCount = Math.min(hintedPassedCount, resolvedQuestionScores.length);
+    passedQuestionIndexes = Array.from({ length: inferredCount }, (_, index) => index);
+  }
+
+  if (resolvedQuestionScores.length > 0) {
+    passedQuestionIndexes = passedQuestionIndexes.filter((index) => index < resolvedQuestionScores.length);
+  }
+
+  const hintedQuestionCount = Math.max(
+    resolvedQuestionScores.length,
+    safeInt(safeSubmission.totalQuestionCount, 0)
+  );
+  const totalQuestionCount = hintedQuestionCount;
+
+  let passedQuestionCount = Math.max(passedQuestionIndexes.length, hintedPassedCount);
+  if (allTestCasesPassedFlag && totalQuestionCount > 0) {
+    passedQuestionCount = totalQuestionCount;
+  }
+  if (totalQuestionCount > 0) {
+    passedQuestionCount = Math.min(totalQuestionCount, passedQuestionCount);
+  }
+
+  const allTestCasesPassed = totalQuestionCount > 0
+    ? (allTestCasesPassedFlag || passedQuestionCount >= totalQuestionCount)
+    : allTestCasesPassedFlag;
+
+  let score = 0;
+
+  if (resolvedQuestionScores.length > 0 && passedQuestionIndexes.length > 0) {
+    score = roundToTwo(
+      passedQuestionIndexes.reduce((sum, index) => sum + safeNumber(resolvedQuestionScores[index], 0), 0)
+    );
+  } else if (allTestCasesPassed && totalPossibleScore > 0) {
+    score = totalPossibleScore;
+  }
+
+  if (totalPossibleScore <= 0 && resolvedQuestionScores.length > 0) {
+    totalPossibleScore = sumScoreList(resolvedQuestionScores);
+  }
+
+  if (totalPossibleScore <= 0 && score > 0) {
+    totalPossibleScore = score;
+  }
+
+  if (totalPossibleScore > 0) {
+    score = Math.min(score, totalPossibleScore);
+  }
+
+  return {
+    score: roundToTwo(score),
+    totalPossibleScore: roundToTwo(totalPossibleScore),
+    passedQuestionCount,
+    totalQuestionCount,
+    allTestCasesPassed,
+    questionScores: resolvedQuestionScores
+  };
+};
+
+const calculateCodingSummary = async ({ codingSection, rawAnswers }) => {
+  const normalizedCodingSection = normalizeCodingSection(codingSection);
+
+  if (!normalizedCodingSection) {
+    return {
+      score: 0,
+      totalMarks: 0,
+      passedQuestionCount: 0,
+      totalQuestionCount: 0,
+      challengeBreakdown: {}
+    };
+  }
+
+  const submissions = getCodingSubmissionMap(rawAnswers);
+  const challengeIds = normalizedCodingSection.challenge_ids;
+  const apiKey = getOneCompilerApiKey();
+
+  const challengeEntries = await Promise.all(
+    challengeIds.map(async (challengeId) => {
+      const submission = submissions[challengeId] && typeof submissions[challengeId] === 'object'
+        ? submissions[challengeId]
+        : {};
+      const submissionScores = normalizeQuestionScoreList(submission.questionScores);
+      const shouldFetchFallback = submissionScores.length === 0;
+      const fallbackProfile = shouldFetchFallback ? await fetchChallengeScoreProfile(challengeId, apiKey) : null;
+      const summary = calculateCodingChallengeSummary(submission, fallbackProfile);
+
+      return [challengeId, summary];
+    })
+  );
+
+  const challengeBreakdown = Object.fromEntries(challengeEntries);
+  const score = roundToTwo(
+    challengeEntries.reduce((sum, [, summary]) => sum + safeNumber(summary?.score, 0), 0)
+  );
+  const totalMarks = roundToTwo(
+    challengeEntries.reduce((sum, [, summary]) => sum + safeNumber(summary?.totalPossibleScore, 0), 0)
+  );
+  const passedQuestionCount = challengeEntries.reduce(
+    (sum, [, summary]) => sum + safeInt(summary?.passedQuestionCount, 0),
+    0
+  );
+  const totalQuestionCount = challengeEntries.reduce(
+    (sum, [, summary]) => sum + safeInt(summary?.totalQuestionCount, 0),
+    0
+  );
+
+  return {
+    score,
+    totalMarks,
+    passedQuestionCount,
+    totalQuestionCount,
+    challengeBreakdown
+  };
+};
+
 const calculateAttemptSummary = (questions, rawAnswers, configuredTotalMarks) => {
   const answers = rawAnswers && typeof rawAnswers === 'object' ? rawAnswers : {};
   const totalQuestions = questions.length;
-  const totalMarks = safeNumber(configuredTotalMarks, totalQuestions > 0 ? totalQuestions : 0);
-  const marksPerQuestion = totalQuestions > 0 ? (totalMarks / totalQuestions) : 0;
+  const configuredMarks = safeNumber(configuredTotalMarks, 0);
 
   let correctCount = 0;
+  let score = 0;
+  let questionMarksTotal = 0;
   const normalizedAnswers = {};
 
   questions.forEach((question, index) => {
     const key = String(index);
     const normalized = normalizeSubmittedAnswer(question, answers[key]);
+    const questionMarks = normalizePositiveMarks(question?.marks, 1);
+    questionMarksTotal += questionMarks;
+
     normalizedAnswers[key] = normalized;
 
     if (isAnswerCorrect(question, normalized)) {
       correctCount += 1;
+      score += questionMarks;
     }
   });
 
-  const scoreRaw = correctCount * marksPerQuestion;
-  const score = Number(scoreRaw.toFixed(2));
+  const totalMarks = questionMarksTotal > 0
+    ? questionMarksTotal
+    : (configuredMarks > 0 ? configuredMarks : totalQuestions);
+  score = roundToTwo(score);
   const percentage = totalMarks > 0 ? Number(((score / totalMarks) * 100).toFixed(2)) : 0;
 
   return {
     normalizedAnswers,
     correctCount,
     totalQuestions,
-    totalMarks: Number(totalMarks.toFixed(2)),
+    totalMarks: roundToTwo(totalMarks),
     score,
-    percentage
+    percentage,
+    configuredTotalMarks: roundToTwo(configuredMarks > 0 ? configuredMarks : totalMarks)
   };
 };
 
@@ -1923,17 +2244,30 @@ router.post('/student/attempts/:attemptId/submit', verifyToken, hasRole('student
       ...(answers && typeof answers === 'object' ? answers : {})
     };
 
-    const scoreSummary = calculateAttemptSummary(
+    const mcqSummary = calculateAttemptSummary(
       questions,
       mergedAnswers,
       attempt.hosted?.template?.total_marks
     );
 
+    const codingSummary = await calculateCodingSummary({
+      codingSection: attempt.hosted?.coding_section,
+      rawAnswers: mergedAnswers
+    });
+
+    const finalScore = roundToTwo(mcqSummary.score + codingSummary.score);
+    const finalTotalMarks = roundToTwo(mcqSummary.totalMarks + codingSummary.totalMarks);
+    const finalPercentage = finalTotalMarks > 0
+      ? roundToTwo((finalScore / finalTotalMarks) * 100)
+      : 0;
+    const finalCorrectCount = mcqSummary.correctCount + codingSummary.passedQuestionCount;
+    const finalTotalQuestions = mcqSummary.totalQuestions + codingSummary.totalQuestionCount;
+
     const metadataAnswers = Object.fromEntries(
       Object.entries(mergedAnswers).filter(([key]) => key.startsWith('__'))
     );
     const finalAnswers = {
-      ...scoreSummary.normalizedAnswers,
+      ...mcqSummary.normalizedAnswers,
       ...metadataAnswers
     };
 
@@ -1953,11 +2287,11 @@ router.post('/student/attempts/:attemptId/submit', verifyToken, hasRole('student
       .update({
         status: submittedStatus,
         answers: finalAnswers,
-        score: scoreSummary.score,
-        total_marks: scoreSummary.totalMarks,
-        percentage: scoreSummary.percentage,
-        correct_count: scoreSummary.correctCount,
-        total_questions: scoreSummary.totalQuestions,
+        score: finalScore,
+        total_marks: finalTotalMarks,
+        percentage: finalPercentage,
+        correct_count: finalCorrectCount,
+        total_questions: finalTotalQuestions,
         submitted_at: new Date().toISOString()
       })
       .eq('id', attempt.id)
