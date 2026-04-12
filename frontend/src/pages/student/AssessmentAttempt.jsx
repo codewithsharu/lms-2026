@@ -341,6 +341,8 @@ const AssessmentAttempt = () => {
     };
   }, [location.pathname, location.search]);
 
+  const shouldAutoTakeoverOnConflict = Boolean(location.state?.autoTakeoverOnConflict);
+
   const isPreviewMode = previewConfig.enabled;
 
   const [loading, setLoading] = useState(true);
@@ -375,6 +377,8 @@ const AssessmentAttempt = () => {
   const hasBootstrapAttemptRef = useRef(false);
   const codingFrameRef = useRef(null);
   const codingFramePollingRef = useRef(null);
+  const loadAttemptRef = useRef(null);
+  const handleSubmitRef = useRef(null);
 
   const buildAutosavePayload = (
     questionList,
@@ -499,6 +503,11 @@ const AssessmentAttempt = () => {
       }
     } catch (error) {
       if (error.response?.status === 409 && error.response?.data?.sessionConflict) {
+        if (shouldAutoTakeoverOnConflict && !forceTakeover) {
+          await loadAttempt({ forceTakeover: true, silent });
+          return;
+        }
+
         setShowSubmitModal(false);
         setSessionConflict({
           message: error.response?.data?.error || 'This attempt is active in another session.',
@@ -521,6 +530,8 @@ const AssessmentAttempt = () => {
       }
     }
   };
+
+  loadAttemptRef.current = loadAttempt;
 
   useEffect(() => {
     document.documentElement.classList.add('exam-page-scrollbar-hidden');
@@ -595,12 +606,12 @@ const AssessmentAttempt = () => {
       if (hydrateAttemptState(bootstrapPayload)) {
         hasBootstrapAttemptRef.current = true;
         setLoading(false);
-        loadAttempt({ silent: true });
+        loadAttemptRef.current?.({ silent: true });
         return;
       }
 
       hasBootstrapAttemptRef.current = false;
-      loadAttempt();
+      loadAttemptRef.current?.();
     };
 
     initializeAttempt();
@@ -666,7 +677,7 @@ const AssessmentAttempt = () => {
     if (timeLeft <= 0) {
       if (!hasAutoSubmittedRef.current) {
         hasAutoSubmittedRef.current = true;
-        handleSubmit(true);
+        handleSubmitRef.current?.(true);
       }
       return;
     }
@@ -1147,6 +1158,8 @@ const AssessmentAttempt = () => {
     }
   };
 
+  handleSubmitRef.current = handleSubmit;
+
   const moveToCodingSection = async () => {
     if (!attemptData?.attempt?.id || !hasCodingSection || switchingToCoding) return;
 
@@ -1330,7 +1343,39 @@ const AssessmentAttempt = () => {
     );
   }
 
-  if (!attemptData) return null;
+  if (!attemptData) {
+    if (sessionConflict) {
+      return (
+        <div className="min-h-screen bg-slate-100 px-4 py-8">
+          <Card className="mx-auto max-w-2xl">
+            <Card.Header>
+              <h2 className="section-title">Resume Here Safely</h2>
+            </Card.Header>
+            <Card.Body className="space-y-4">
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                {sessionConflict.message || 'This attempt is active in another browser session.'}
+              </div>
+              <p className="text-sm text-slate-600">
+                To prevent conflicts, only one browser session can save answers at a time.
+                Continue here to safely move this attempt to your current browser.
+              </p>
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button variant="secondary" onClick={() => navigate('/student/assessments')}>
+                  Back to Assessments
+                </Button>
+                <Button onClick={handleSessionTakeover} disabled={resumingHere}>
+                  <FiLock className="h-4 w-4" />
+                  {resumingHere ? 'Resuming Here...' : 'Resume Here & Logout Other Session'}
+                </Button>
+              </div>
+            </Card.Body>
+          </Card>
+        </div>
+      );
+    }
+
+    return null;
+  }
 
   if (submittedSummary) {
     return (

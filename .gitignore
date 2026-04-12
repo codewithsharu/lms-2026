@@ -140,3 +140,29 @@ vite.config.ts.timestamp-*
 
 # Local planning notes
 plan.txt
+
+# Local QA regression assets
+qa/
+
+# Local temporary automation scripts
+.tmp_*.ps1
+resume-edge-test.ps1
+
+# Generic local temp files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# OS-specific junk files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local editor/project metadata
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json

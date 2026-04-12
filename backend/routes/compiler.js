@@ -271,6 +271,69 @@ router.post('/challenges', async (req, res) => {
   }
 });
 
+router.put('/challenges/:challengeId', async (req, res) => {
+  try {
+    const apiKey = getOneCompilerApiKey();
+
+    if (!apiKey) {
+      return res.status(500).json({ error: 'ONECOMPILER_API_KEY is not configured on server' });
+    }
+
+    const challengeId = String(req.params.challengeId || '').trim();
+
+    if (!challengeId) {
+      return res.status(400).json({ error: 'challengeId is required' });
+    }
+
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Challenge payload must be a JSON object' });
+    }
+
+    const challenge = req.body.challenge;
+    const problems = req.body.problems;
+
+    if (!challenge || typeof challenge !== 'object' || Array.isArray(challenge)) {
+      return res.status(400).json({ error: 'Payload must include challenge object' });
+    }
+
+    if (!Array.isArray(problems)) {
+      return res.status(400).json({ error: 'Payload must include problems array' });
+    }
+
+    const normalizedPayload = {
+      ...req.body,
+      challenge: {
+        ...challenge,
+        _id: String(challenge._id || challengeId).trim()
+      },
+      problems
+    };
+
+    if (!normalizedPayload.challenge._id) {
+      return res.status(400).json({ error: 'challenge._id is required for update' });
+    }
+
+    const upstream = await callOneCompiler({
+      url: `${ONECOMPILER_API_BASE}/v1/challenges/update?access_token=${encodeURIComponent(apiKey)}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(normalizedPayload)
+    });
+
+    if (!upstream.ok) {
+      return sendUpstreamFailure(res, upstream.status, upstream.payload, 'Challenge update failed');
+    }
+
+    return res.status(upstream.status).json(upstream.payload);
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      return res.status(504).json({ error: 'Challenge update timed out' });
+    }
+
+    return res.status(500).json({ error: 'Failed to update challenge' });
+  }
+});
+
 router.get('/challenges', async (req, res) => {
   try {
     const apiKey = getOneCompilerApiKey();

@@ -579,7 +579,6 @@ const ChallengeRunner = () => {
     }
 
     loadChallenge(initialChallengeId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialChallengeId]);
 
   const runCustomCode = async () => {

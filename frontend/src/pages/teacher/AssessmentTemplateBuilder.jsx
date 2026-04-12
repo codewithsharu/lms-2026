@@ -126,6 +126,8 @@ const AssessmentTemplateBuilder = () => {
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [importingJson, setImportingJson] = useState(false);
   const draftCreationRef = useRef(false);
+  const initializeBuilderRef = useRef(null);
+  const persistTemplateRef = useRef(null);
 
   const isLocalDraft = Boolean(activeTemplate?.isLocalDraft);
   const isPlaceholderDraft = Boolean(activeTemplate?.isPlaceholder);
@@ -180,8 +182,10 @@ const AssessmentTemplateBuilder = () => {
     }
   };
 
+  initializeBuilderRef.current = initializeBuilder;
+
   useEffect(() => {
-    initializeBuilder();
+    initializeBuilderRef.current?.();
   }, [templateId]);
 
   useEffect(() => {
@@ -278,11 +282,13 @@ const AssessmentTemplateBuilder = () => {
     }
   };
 
+  persistTemplateRef.current = persistTemplate;
+
   useEffect(() => {
     if (!activeTemplate?.id || isLocalDraft || isPlaceholderDraft) return;
 
     const timer = setTimeout(() => {
-      persistTemplate(mcqList, templateName, false);
+      persistTemplateRef.current?.(mcqList, templateName, false);
     }, 900);
 
     return () => clearTimeout(timer);
@@ -492,7 +498,10 @@ const AssessmentTemplateBuilder = () => {
       setMcqList((prev) => [...prev, ...normalized]);
       toast.success(`${normalized.length} question(s) added from JSON`);
     } catch (error) {
-      toast.error('Failed to import JSON file');
+      const message = error instanceof SyntaxError
+        ? 'Invalid JSON syntax in uploaded file'
+        : (error?.response?.data?.error || 'Failed to import JSON file');
+      toast.error(message);
     } finally {
       setImportingJson(false);
     }

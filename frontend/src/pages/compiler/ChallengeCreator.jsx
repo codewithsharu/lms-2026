@@ -41,23 +41,15 @@ const extractChallengeId = (payload) => firstTruthyString([
   payload?.result?.id
 ]);
 
-const extractChallengeSlug = (payload) => firstTruthyString([
-  payload?.slug,
-  payload?.challengeSlug,
-  payload?.doc?.slug,
-  payload?.doc?.link,
-  payload?.challenge?.slug,
-  payload?.data?.slug,
-  payload?.result?.slug
-]);
-
 const createEmptyTestCase = (index) => ({
+  id: index,
   label: `case-${index}`,
   input: '',
   output: ''
 });
 
 const createEmptyQuestion = () => ({
+  problemId: '',
   title: '',
   markdown: '',
   score: 1,
@@ -68,6 +60,7 @@ const createEmptyQuestion = () => ({
 });
 
 const createEmptyChallengeForm = () => ({
+  challengeId: '',
   title: '',
   markdown: '',
   tagsText: '',
@@ -85,6 +78,7 @@ const buildFormFromPayload = (payload) => {
       const validations = Array.isArray(codeOptions.validations)
         ? codeOptions.validations
             .map((validation, index) => ({
+              id: Number.isFinite(Number(validation?.id)) ? Number(validation.id) : index + 1,
               label: String(validation?.label || `case-${index + 1}`),
               input: String(validation?.input ?? ''),
               output: String(validation?.output ?? '')
@@ -93,6 +87,7 @@ const buildFormFromPayload = (payload) => {
         : [];
 
       return {
+        problemId: String(problem?._id || problem?.id || '').trim(),
         title: String(problem?.title || ''),
         markdown: String(problem?.markdown || ''),
         score: Number(problem?.properties?.score || 1),
@@ -107,6 +102,7 @@ const buildFormFromPayload = (payload) => {
     : [createEmptyQuestion()];
 
   return {
+    challengeId: String(challenge?._id || challenge?.id || '').trim(),
     title: String(challenge?.title || ''),
     markdown: String(challenge?.markdown || ''),
     tagsText: Array.isArray(challenge?.tags)
@@ -117,39 +113,89 @@ const buildFormFromPayload = (payload) => {
   };
 };
 
-const buildPayloadFromForm = (formState) => {
+const buildPayloadFromForm = (formState, basePayload = null) => {
   const tags = String(formState.tagsText || '')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
 
+  const baseChallenge = basePayload?.challenge && typeof basePayload.challenge === 'object' && !Array.isArray(basePayload.challenge)
+    ? basePayload.challenge
+    : {};
+
+  const baseProblems = Array.isArray(basePayload?.problems) ? basePayload.problems : [];
+  const baseProblemsById = new Map(
+    baseProblems
+      .map((problem) => [String(problem?._id || problem?.id || '').trim(), problem])
+      .filter(([problemId]) => Boolean(problemId))
+  );
+
+  const challengePayload = {
+    ...baseChallenge,
+    title: String(formState.title || '').trim(),
+    markdown: String(formState.markdown || '').trim(),
+    tags,
+    visibility: String(formState.visibility || 'unlisted'),
+    properties: {
+      ...(baseChallenge?.properties && typeof baseChallenge.properties === 'object' ? baseChallenge.properties : {})
+    }
+  };
+
+  const normalizedChallengeId = String(formState.challengeId || '').trim();
+  if (normalizedChallengeId) {
+    challengePayload._id = normalizedChallengeId;
+  } else {
+    delete challengePayload._id;
+  }
+
   return {
-    challenge: {
-      title: String(formState.title || '').trim(),
-      markdown: String(formState.markdown || '').trim(),
-      tags,
-      visibility: String(formState.visibility || 'unlisted'),
-      properties: {}
-    },
+    challenge: challengePayload,
     problems: (formState.questions || []).map((question) => {
+      const normalizedProblemId = String(question.problemId || '').trim();
+      const baseProblem = normalizedProblemId
+        ? (baseProblemsById.get(normalizedProblemId) || {})
+        : {};
+
+      const baseCodeOptions = baseProblem?.properties?.options?.code && typeof baseProblem.properties.options.code === 'object'
+        ? baseProblem.properties.options.code
+        : {};
+
+      const baseValidationsById = new Map(
+        (Array.isArray(baseCodeOptions.validations) ? baseCodeOptions.validations : [])
+          .map((validation) => [Number(validation?.id), validation])
+          .filter(([validationId]) => Number.isFinite(validationId))
+      );
+
       const validations = (question.validations || [])
-        .map((validation, index) => ({
-          id: index + 1,
-          label: String(validation.label || `case-${index + 1}`).trim() || `case-${index + 1}`,
-          input: String(validation.input || ''),
-          output: String(validation.output || '')
-        }))
+        .map((validation, index) => {
+          const normalizedValidationId = Number.isFinite(Number(validation.id)) ? Number(validation.id) : index + 1;
+          const baseValidation = baseValidationsById.get(normalizedValidationId) || {};
+
+          return {
+            ...baseValidation,
+            id: normalizedValidationId,
+            label: String(validation.label || `case-${index + 1}`).trim() || `case-${index + 1}`,
+            input: String(validation.input || ''),
+            output: String(validation.output || '')
+          };
+        })
         .filter((validation) => validation.output.length > 0 || validation.input.length > 0);
 
-      return {
+      const problemPayload = {
+        ...baseProblem,
         title: String(question.title || '').trim(),
         markdown: String(question.markdown || '').trim(),
         properties: {
+          ...(baseProblem?.properties && typeof baseProblem.properties === 'object' ? baseProblem.properties : {}),
           problemType: 'code',
           score: Number(question.score || 1),
           difficultyLevel: String(question.difficultyLevel || 'easy'),
           options: {
+            ...(baseProblem?.properties?.options && typeof baseProblem.properties.options === 'object'
+              ? baseProblem.properties.options
+              : {}),
             code: {
+              ...baseCodeOptions,
               supportedLanguages: (question.supportedLanguages || []).length > 0
                 ? question.supportedLanguages
                 : ['python'],
@@ -160,6 +206,14 @@ const buildPayloadFromForm = (formState) => {
           }
         }
       };
+
+      if (normalizedProblemId) {
+        problemPayload._id = normalizedProblemId;
+      } else {
+        delete problemPayload._id;
+      }
+
+      return problemPayload;
     })
   };
 };
@@ -207,11 +261,20 @@ const extractEditablePayload = (payload) => {
   return null;
 };
 
+const getEditablePayloadChallengeId = (payload) => firstTruthyString([
+  payload?.challenge?._id,
+  payload?.challenge?.id,
+  payload?.challengeId,
+  payload?.id,
+  payload?._id
+]);
+
 const ChallengeCreator = () => {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const isPortalMode = isTeacherCompilerPath(location.pathname);
   const sourceChallengeId = String(searchParams.get('sourceChallengeId') || '').trim();
+  const [editableSourcePayload, setEditableSourcePayload] = useState(null);
   const [formState, setFormState] = useState(() => createEmptyChallengeForm());
   const [jsonInput, setJsonInput] = useState(() => JSON.stringify(buildPayloadFromForm(createEmptyChallengeForm()), null, 2));
   const [jsonError, setJsonError] = useState('');
@@ -222,7 +285,10 @@ const ChallengeCreator = () => {
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
 
-  const payload = useMemo(() => buildPayloadFromForm(formState), [formState]);
+  const payload = useMemo(
+    () => buildPayloadFromForm(formState, editableSourcePayload),
+    [formState, editableSourcePayload]
+  );
   const payloadJson = useMemo(() => JSON.stringify(payload, null, 2), [payload]);
 
   const challengeId = useMemo(() => extractChallengeId(result), [result]);
@@ -249,6 +315,7 @@ const ChallengeCreator = () => {
 
     const loadSourceChallenge = async () => {
       if (!sourceChallengeId) {
+        setEditableSourcePayload(null);
         setSourceLoadError('');
         setLoadingSourceChallenge(false);
         return;
@@ -269,6 +336,7 @@ const ChallengeCreator = () => {
           return;
         }
 
+        setEditableSourcePayload(editablePayload);
         setFormState(buildFormFromPayload(editablePayload));
         setJsonInput(JSON.stringify(editablePayload, null, 2));
         setJsonError('');
@@ -312,6 +380,7 @@ const ChallengeCreator = () => {
 
     try {
       const parsedPayload = parsePayloadJson(nextJson);
+      setEditableSourcePayload(parsedPayload);
       setFormState(buildFormFromPayload(parsedPayload));
       setJsonError('');
       setResult(null);
@@ -439,13 +508,46 @@ const ChallengeCreator = () => {
     try {
       setSubmitting(true);
       setError('');
-      const response = await compilerAPI.createChallenge(requestPayload);
-      setFormState(buildFormFromPayload(requestPayload));
-      setJsonInput(JSON.stringify(requestPayload, null, 2));
+
+      const isEditMode = Boolean(sourceChallengeId);
+      const fallbackChallengeId = getEditablePayloadChallengeId(requestPayload);
+      const targetChallengeId = firstTruthyString([sourceChallengeId, fallbackChallengeId]);
+
+      if (isEditMode && !targetChallengeId) {
+        throw new Error('Challenge ID is missing for update');
+      }
+
+      const normalizedRequestPayload = {
+        ...requestPayload,
+        challenge: {
+          ...(requestPayload?.challenge || {})
+        }
+      };
+
+      if (isEditMode && targetChallengeId) {
+        normalizedRequestPayload.challenge._id = targetChallengeId;
+      }
+
+      const response = isEditMode
+        ? await compilerAPI.updateChallenge(targetChallengeId, normalizedRequestPayload)
+        : await compilerAPI.createChallenge(normalizedRequestPayload);
+
+      const editableResponsePayload = extractEditablePayload(response.data);
+      const syncedPayload = editableResponsePayload || normalizedRequestPayload;
+
+      setEditableSourcePayload(syncedPayload);
+      setFormState(buildFormFromPayload(syncedPayload));
+      setJsonInput(JSON.stringify(syncedPayload, null, 2));
       setResult(response.data);
-      toast.success(sourceChallengeId ? 'Challenge saved successfully' : 'Challenge created successfully');
+
+      if (sourceChallengeId) {
+        toast.success('Challenge updated successfully');
+      } else {
+        toast.success('Challenge created successfully');
+      }
     } catch (requestError) {
-      const message = requestError.response?.data?.error || 'Challenge creation failed';
+      const message = requestError.response?.data?.error
+        || (sourceChallengeId ? 'Challenge update failed' : 'Challenge creation failed');
       setError(message);
       toast.error(message);
     } finally {

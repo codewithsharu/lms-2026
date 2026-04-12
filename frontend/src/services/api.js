@@ -113,6 +113,7 @@ export const compilerAPI = {
   getLanguages: () => api.get('/compiler/languages'),
   listChallenges: (params) => api.get('/compiler/challenges', { params }),
   createChallenge: (payload) => api.post('/compiler/challenges', payload),
+  updateChallenge: (challengeId, payload) => api.put(`/compiler/challenges/${challengeId}`, payload),
   getChallenge: (challengeId) => api.get(`/compiler/challenges/${challengeId}`),
   deleteChallenge: (challengeId) => api.delete(`/compiler/challenges/${challengeId}`),
   getChallengeStats: (challengeId) => api.get(`/compiler/challenges/${challengeId}/stats`),

@@ -92,7 +92,9 @@ const AssessmentInstructions = () => {
     } catch (error) {
       if (error.response?.status === 409 && error.response?.data?.sessionConflict && error.response?.data?.attemptId) {
         toast.error(error.response?.data?.error || 'This exam is active in another session');
-        navigate(`/student/assessments/attempt/${error.response.data.attemptId}`);
+        navigate(`/student/assessments/attempt/${error.response.data.attemptId}`, {
+          state: { autoTakeoverOnConflict: true }
+        });
       } else {
         toast.error(error.response?.data?.error || 'Failed to start attempt');
       }

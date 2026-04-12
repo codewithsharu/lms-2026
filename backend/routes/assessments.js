@@ -2037,7 +2037,12 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
 
       if (updateError) throw updateError;
 
-      resolvedAttempt = updatedAttempt;
+      // Preserve already-joined hosted/template data from the original fetch.
+      // The update query selects only assessment_attempts columns.
+      resolvedAttempt = {
+        ...updatedAttempt,
+        hosted: attempt.hosted
+      };
     }
 
     const questions = normalizeQuestionList(resolvedAttempt.hosted?.template?.template_data);
@@ -2527,7 +2532,7 @@ router.get('/metrics/student', verifyToken, hasRole('student'), async (req, res)
     const { data: hostedExams, error } = await supabase
       .from('hosted_assessments')
       .select('id, class_id, section_id, zone, publish_status, start_time, end_time')
-      .eq('publish_status', 'published');
+      .in('publish_status', ['published', 'closed']);
 
     if (error && isMissingHostedTableError(error)) {
       return res.json({ assigned: 0, inProgress: 0, upcoming: 0, completed: 0, setupRequired: true });
@@ -2545,12 +2550,14 @@ router.get('/metrics/student', verifyToken, hasRole('student'), async (req, res)
       return isExamAssignedToStudent(exam, studentDetail, req.user.id, targetedStudentIds);
     });
 
-    const inProgress = exams.filter((exam) => {
+    const publishedExams = exams.filter((exam) => exam.publish_status === 'published');
+
+    const inProgress = publishedExams.filter((exam) => {
       if (!exam.start_time || !exam.end_time) return false;
       return new Date(exam.start_time) <= now && now <= new Date(exam.end_time);
     }).length;
 
-    const upcoming = exams.filter((exam) => {
+    const upcoming = publishedExams.filter((exam) => {
       if (!exam.start_time) return false;
       return now < new Date(exam.start_time);
     }).length;
