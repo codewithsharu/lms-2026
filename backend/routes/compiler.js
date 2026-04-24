@@ -97,6 +97,38 @@ const readJsonOrText = async (response) => {
   }
 };
 
+const toObject = (value) => (
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : {}
+);
+
+const firstNonEmptyString = (values = []) => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return '';
+};
+
+const isProblemEffectivelyBlank = (problem) => {
+  const row = toObject(problem);
+  const rowProperties = toObject(row.properties);
+  const rowCodeOptions = toObject(toObject(rowProperties.options).code);
+  const validations = Array.isArray(rowCodeOptions.validations)
+    ? rowCodeOptions.validations.filter((entry) => Boolean(entry))
+    : [];
+
+  const hasId = Boolean(firstNonEmptyString([row._id, row.id]));
+  const hasTitle = Boolean(firstNonEmptyString([row.title]));
+  const hasMarkdown = Boolean(firstNonEmptyString([row.markdown]));
+  const hasValidations = validations.length > 0;
+
+  return !hasId && !hasTitle && !hasMarkdown && !hasValidations;
+};
+
 const callOneCompiler = async ({ url, method = 'GET', headers = {}, body }) => {
   const controller = new AbortController();
   const timeoutMs = Number.isFinite(ONECOMPILER_TIMEOUT_MS) ? ONECOMPILER_TIMEOUT_MS : 25000;
@@ -136,11 +168,16 @@ const normalizeRunFiles = (language, files, code, fileName) => {
     return [];
   }
 
-  const extension = languageExtensionMap[String(language || '').toLowerCase()] || 'txt';
-  const fallbackName = `main.${extension}`;
+  const normalizedLanguage = String(language || '').toLowerCase();
+  const extension = languageExtensionMap[normalizedLanguage] || 'txt';
+  const fallbackName = normalizedLanguage === 'java' ? 'Main.java' : `main.${extension}`;
+  const requestedName = String(fileName || fallbackName).trim() || fallbackName;
+  const resolvedName = (
+    normalizedLanguage === 'java' && requestedName.toLowerCase() === 'main.java'
+  ) ? 'Main.java' : requestedName;
 
   return [{
-    name: String(fileName || fallbackName).trim() || fallbackName,
+    name: resolvedName,
     content: code
   }];
 };
@@ -250,11 +287,79 @@ router.post('/challenges', async (req, res) => {
       return res.status(400).json({ error: 'Challenge payload must be a JSON object' });
     }
 
+    const hasWrappedPayload = (
+      req.body.challenge
+      && typeof req.body.challenge === 'object'
+      && !Array.isArray(req.body.challenge)
+    );
+
+    let normalizedPayload = req.body;
+
+    if (!hasWrappedPayload) {
+      const { problems, ...challengeFields } = req.body;
+      normalizedPayload = {
+        challenge: challengeFields,
+        problems: Array.isArray(problems) ? problems : []
+      };
+    }
+
+    const challenge = normalizedPayload.challenge;
+    const problems = normalizedPayload.problems;
+
+    const normalizedProblems = Array.isArray(problems)
+      ? problems.filter((problem) => !isProblemEffectivelyBlank(problem))
+      : [];
+
+    const normalizedTitle = String(challenge?.title || '').trim();
+    const normalizedMarkdown = String(challenge?.markdown || '').trim();
+
+    if (!normalizedTitle || !normalizedMarkdown) {
+      return res.status(400).json({
+        error: 'Invalid challenge data. Missing title/ markdown.',
+        hint: 'Send { challenge: { title, markdown, ... }, problems: [...] }'
+      });
+    }
+
+    if (normalizedProblems.length === 0) {
+      return res.status(400).json({
+        error: 'Invalid challenge data. No problems found.',
+        hint: 'Send at least one problem in payload.problems'
+      });
+    }
+
+    const invalidCreateProblemIndex = normalizedProblems.findIndex((problem) => {
+      const row = toObject(problem);
+      const rowProperties = toObject(row.properties);
+
+      return (
+        !firstNonEmptyString([row.title])
+        || !firstNonEmptyString([row.markdown])
+        || !firstNonEmptyString([rowProperties.problemType])
+      );
+    });
+
+    if (invalidCreateProblemIndex >= 0) {
+      return res.status(400).json({
+        error: `Invalid problem data for create at problem index ${invalidCreateProblemIndex + 1}. Missing title/markdown/problemType.`,
+        hint: 'Fill required fields for each question, or remove incomplete rows before saving.'
+      });
+    }
+
+    normalizedPayload = {
+      ...normalizedPayload,
+      challenge: {
+        ...challenge,
+        title: normalizedTitle,
+        markdown: normalizedMarkdown
+      },
+      problems: normalizedProblems
+    };
+
     const upstream = await callOneCompiler({
       url: `${ONECOMPILER_API_BASE}/v1/challenges/create?access_token=${encodeURIComponent(apiKey)}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body)
+      body: JSON.stringify(normalizedPayload)
     });
 
     if (!upstream.ok) {
@@ -300,17 +405,310 @@ router.put('/challenges/:challengeId', async (req, res) => {
       return res.status(400).json({ error: 'Payload must include problems array' });
     }
 
+    if (problems.length === 0) {
+      return res.status(400).json({ error: 'Payload must include at least one problem for update' });
+    }
+
+    const existingChallengeUpstream = await callOneCompiler({
+      url: `${ONECOMPILER_API_BASE}/v1/challenges/${encodeURIComponent(challengeId)}?access_token=${encodeURIComponent(apiKey)}`
+    });
+
+    if (!existingChallengeUpstream.ok) {
+      return sendUpstreamFailure(
+        res,
+        existingChallengeUpstream.status,
+        existingChallengeUpstream.payload,
+        'Failed to load existing challenge before update'
+      );
+    }
+
+    const existingChallengePayload = toObject(existingChallengeUpstream.payload?.challenge);
+    const existingProblems = Array.isArray(existingChallengeUpstream.payload?.problems)
+      ? existingChallengeUpstream.payload.problems
+      : [];
+    const existingProblemsById = new Map(
+      existingProblems
+        .map((problem) => [firstNonEmptyString([problem?._id, problem?.id]), problem])
+        .filter(([problemId]) => Boolean(problemId))
+    );
+
+    const incomingChallenge = toObject(challenge);
+
+    const normalizedChallengeId = firstNonEmptyString([
+      incomingChallenge._id,
+      incomingChallenge.id,
+      challengeId
+    ]);
+    const normalizedChallengeTitle = firstNonEmptyString([
+      incomingChallenge.title,
+      existingChallengePayload.title
+    ]);
+    const normalizedChallengeMarkdown = firstNonEmptyString([
+      incomingChallenge.markdown,
+      existingChallengePayload.markdown
+    ]);
+    const normalizedChallengeUserId = firstNonEmptyString([
+      incomingChallenge?.user?._id,
+      existingChallengePayload?.user?._id
+    ]);
+
+    const firstExistingProblemUserId = firstNonEmptyString(
+      existingProblems.map((problem) => problem?.user?._id)
+    );
+    const firstIncomingProblemUserId = firstNonEmptyString(
+      problems.map((problem) => problem?.user?._id)
+    );
+    const globalProblemUserId = firstNonEmptyString([
+      normalizedChallengeUserId,
+      firstExistingProblemUserId,
+      firstIncomingProblemUserId
+    ]);
+
+    const unmappedProblemIndexes = [];
+
+    const normalizedProblems = problems.map((problem, index) => {
+      const incomingProblem = toObject(problem);
+      const incomingProblemId = firstNonEmptyString([incomingProblem._id, incomingProblem.id]);
+      const fallbackExistingProblem = incomingProblemId
+        ? existingProblemsById.get(incomingProblemId)
+        : existingProblems[index];
+      const existingProblem = toObject(fallbackExistingProblem);
+
+      const existingProperties = toObject(existingProblem.properties);
+      const incomingProperties = toObject(incomingProblem.properties);
+
+      const existingOptions = toObject(existingProperties.options);
+      const incomingOptions = toObject(incomingProperties.options);
+      const existingCodeOptions = toObject(existingOptions.code);
+      const incomingCodeOptions = toObject(incomingOptions.code);
+
+      const mergedOptions = {
+        ...existingOptions,
+        ...incomingOptions,
+        ...(Object.keys(existingCodeOptions).length > 0 || Object.keys(incomingCodeOptions).length > 0
+          ? {
+            code: {
+              ...existingCodeOptions,
+              ...incomingCodeOptions
+            }
+          }
+          : {})
+      };
+
+      const mergedProperties = {
+        ...existingProperties,
+        ...incomingProperties,
+        problemType: firstNonEmptyString([
+          incomingProperties.problemType,
+          existingProperties.problemType,
+          'code'
+        ])
+      };
+
+      if (Object.keys(mergedOptions).length > 0) {
+        mergedProperties.options = mergedOptions;
+      }
+
+      const resolvedProblemId = firstNonEmptyString([
+        incomingProblemId,
+        existingProblem._id,
+        existingProblem.id
+      ]);
+      const incomingProblemLooksBlank = isProblemEffectivelyBlank(incomingProblem);
+
+      if (!resolvedProblemId && incomingProblemLooksBlank) {
+        return null;
+      }
+
+      if (!resolvedProblemId) {
+        unmappedProblemIndexes.push(index + 1);
+      }
+
+      const normalizedProblemUserId = firstNonEmptyString([
+        incomingProblem?.user?._id,
+        existingProblem?.user?._id,
+        globalProblemUserId
+      ]);
+
+      const normalizedProblem = {
+        ...existingProblem,
+        ...incomingProblem,
+        _id: resolvedProblemId,
+        title: firstNonEmptyString([incomingProblem.title, existingProblem.title]) || `Problem ${index + 1}`,
+        markdown: firstNonEmptyString([incomingProblem.markdown, existingProblem.markdown]) || ' ',
+        properties: mergedProperties,
+        user: {
+          ...toObject(existingProblem.user),
+          ...toObject(incomingProblem.user),
+          ...(normalizedProblemUserId ? { _id: normalizedProblemUserId } : {})
+        }
+      };
+
+      if (!normalizedProblem._id) {
+        delete normalizedProblem._id;
+      }
+
+      return normalizedProblem;
+    }).filter(Boolean);
+
+    if (!normalizedChallengeId || !normalizedChallengeTitle || !normalizedChallengeMarkdown) {
+      return res.status(400).json({
+        error: 'Invalid challenge data for update. Missing challenge _id/title/markdown.',
+        hint: 'Load challenge in edit mode and avoid deleting challenge metadata fields.'
+      });
+    }
+
+    const normalizedProblemIds = normalizedProblems
+      .map((problem) => firstNonEmptyString([problem?._id, problem?.id]))
+      .filter(Boolean);
+
+    const normalizedChallengeOwnerId = firstNonEmptyString([
+      normalizedChallengeUserId,
+      globalProblemUserId
+    ]);
+
+    const mergedChallengeProperties = {
+      ...toObject(existingChallengePayload.properties),
+      ...toObject(incomingChallenge.properties)
+    };
+
+    if (normalizedProblemIds.length > 0) {
+      mergedChallengeProperties.problemIds = normalizedProblemIds;
+    } else {
+      delete mergedChallengeProperties.problemIds;
+    }
+
     const normalizedPayload = {
       ...req.body,
       challenge: {
-        ...challenge,
-        _id: String(challenge._id || challengeId).trim()
+        ...existingChallengePayload,
+        ...incomingChallenge,
+        _id: normalizedChallengeId,
+        title: normalizedChallengeTitle,
+        markdown: normalizedChallengeMarkdown,
+        properties: mergedChallengeProperties,
+        user: {
+          ...toObject(existingChallengePayload.user),
+          ...toObject(incomingChallenge.user),
+          ...(normalizedChallengeOwnerId ? { _id: normalizedChallengeOwnerId } : {})
+        }
       },
-      problems
+      problems: normalizedProblems
     };
 
     if (!normalizedPayload.challenge._id) {
       return res.status(400).json({ error: 'challenge._id is required for update' });
+    }
+
+    if (unmappedProblemIndexes.length > 0) {
+      const recreateChallengeProperties = {
+        ...toObject(normalizedPayload.challenge.properties)
+      };
+      delete recreateChallengeProperties.problemIds;
+
+      const recreatePayload = {
+        challenge: {
+          title: normalizedChallengeTitle,
+          markdown: normalizedChallengeMarkdown,
+          tags: Array.isArray(normalizedPayload.challenge.tags) ? normalizedPayload.challenge.tags : [],
+          visibility: firstNonEmptyString([normalizedPayload.challenge.visibility, 'unlisted']),
+          properties: recreateChallengeProperties
+        },
+        problems: normalizedProblems.map((problem, index) => ({
+          title: firstNonEmptyString([problem?.title]) || `Problem ${index + 1}`,
+          markdown: firstNonEmptyString([problem?.markdown]) || ' ',
+          visibility: firstNonEmptyString([problem?.visibility, 'public']),
+          properties: {
+            ...toObject(problem?.properties),
+            problemType: firstNonEmptyString([problem?.properties?.problemType, 'code'])
+          }
+        }))
+      };
+
+      const recreateUpstream = await callOneCompiler({
+        url: `${ONECOMPILER_API_BASE}/v1/challenges/create?access_token=${encodeURIComponent(apiKey)}`,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(recreatePayload)
+      });
+
+      if (!recreateUpstream.ok) {
+        return sendUpstreamFailure(res, recreateUpstream.status, recreateUpstream.payload, 'Challenge recreation failed');
+      }
+
+      const recreatedChallengeId = firstNonEmptyString([
+        recreateUpstream.payload?.challengeId,
+        recreateUpstream.payload?.challenge_id,
+        recreateUpstream.payload?.id,
+        recreateUpstream.payload?._id,
+        recreateUpstream.payload?.doc?._id,
+        recreateUpstream.payload?.data?._id
+      ]);
+
+      if (!recreatedChallengeId) {
+        return res.status(recreateUpstream.status).json({
+          ...toObject(recreateUpstream.payload),
+          _meta: {
+            recreated: true,
+            recreatedFromChallengeId: challengeId,
+            reason: 'update-does-not-support-new-problems',
+            unmappedProblemIndexes
+          }
+        });
+      }
+
+      const recreatedDetailUpstream = await callOneCompiler({
+        url: `${ONECOMPILER_API_BASE}/v1/challenges/${encodeURIComponent(recreatedChallengeId)}?access_token=${encodeURIComponent(apiKey)}`
+      });
+
+      if (recreatedDetailUpstream.ok) {
+        return res.status(200).json({
+          ...toObject(recreatedDetailUpstream.payload),
+          _meta: {
+            recreated: true,
+            recreatedFromChallengeId: challengeId,
+            recreatedChallengeId,
+            reason: 'update-does-not-support-new-problems',
+            unmappedProblemIndexes
+          }
+        });
+      }
+
+      return res.status(200).json({
+        ...toObject(recreateUpstream.payload),
+        _meta: {
+          recreated: true,
+          recreatedFromChallengeId: challengeId,
+          recreatedChallengeId,
+          reason: 'update-does-not-support-new-problems',
+          unmappedProblemIndexes
+        }
+      });
+    }
+
+    if (normalizedProblems.length === 0) {
+      return res.status(400).json({
+        error: 'No valid problems found for update.',
+        hint: 'Keep at least one existing problem when saving edits.'
+      });
+    }
+
+    const invalidProblemIndex = normalizedProblems.findIndex((problem) => {
+      const normalizedProblemType = firstNonEmptyString([problem?.properties?.problemType]);
+      const normalizedProblemUserId = firstNonEmptyString([problem?.user?._id]);
+
+      return (
+        !firstNonEmptyString([problem?._id])
+        || !normalizedProblemType
+        || !normalizedProblemUserId
+      );
+    });
+
+    if (invalidProblemIndex >= 0) {
+      return res.status(400).json({
+        error: `Invalid problem data for update at problem index ${invalidProblemIndex + 1}. Missing _id/problemType/user._id.`,
+        hint: 'Load challenge in edit mode and retain existing problem metadata while updating.'
+      });
     }
 
     const upstream = await callOneCompiler({

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { FiClock, FiCode, FiEdit2, FiEye, FiPlayCircle, FiPlus, FiRotateCcw, FiSave } from 'react-icons/fi';
+import { FiClock, FiCode, FiEdit2, FiEye, FiPlayCircle, FiPlus, FiRotateCcw, FiSave, FiTrash2 } from 'react-icons/fi';
 import Layout from '../../components/Layout';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
@@ -138,6 +138,7 @@ const HostExams = () => {
   const [challengeSearch, setChallengeSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [revokingExamId, setRevokingExamId] = useState(null);
+  const [deletingExamId, setDeletingExamId] = useState(null);
   const [statusUpdatingExamId, setStatusUpdatingExamId] = useState(null);
   const [selectedExam, setSelectedExam] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -563,6 +564,26 @@ const HostExams = () => {
     }
   };
 
+  const handleDeleteExam = async (exam) => {
+    if (!exam?.id) return;
+
+    const confirmed = window.confirm(
+      'Delete this scheduled exam? Assigned students will be unassigned and all student submissions/marks for this exam will be deleted.'
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeletingExamId(exam.id);
+      const response = await assessmentAPI.deleteHostedExam(exam.id);
+      toast.success(response.data?.message || 'Scheduled exam deleted successfully');
+      fetchHostedExams();
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to delete scheduled exam');
+    } finally {
+      setDeletingExamId(null);
+    }
+  };
+
   return (
     <Layout>
       <div className="app-page">
@@ -687,7 +708,11 @@ const HostExams = () => {
                               variant="secondary"
                               className="py-1.5! px-3! inline-flex items-center gap-1.5"
                               onClick={() => handleOpenStudentPreview(exam)}
-                              disabled={statusUpdatingExamId === exam.id || revokingExamId === exam.id}
+                              disabled={
+                                statusUpdatingExamId === exam.id
+                                || revokingExamId === exam.id
+                                || deletingExamId === exam.id
+                              }
                             >
                               <FiEye className="h-4 w-4" />
                               Preview
@@ -697,7 +722,11 @@ const HostExams = () => {
                                 variant="secondary"
                                 className="py-1.5! px-3! border-red-200! bg-red-50! text-red-700! hover:bg-red-100! inline-flex items-center gap-1.5"
                                 onClick={() => handleRevokeExam(exam)}
-                                disabled={revokingExamId === exam.id || statusUpdatingExamId === exam.id}
+                                disabled={
+                                  revokingExamId === exam.id
+                                  || statusUpdatingExamId === exam.id
+                                  || deletingExamId === exam.id
+                                }
                               >
                                 <FiRotateCcw className="h-4 w-4" />
                                 {revokingExamId === exam.id ? 'Revoking...' : 'Revoke'}
@@ -705,9 +734,23 @@ const HostExams = () => {
                             )}
                             <Button
                               variant="secondary"
+                              className="py-1.5! px-3! border-red-200! bg-red-50! text-red-700! hover:bg-red-100! inline-flex items-center gap-1.5"
+                              onClick={() => handleDeleteExam(exam)}
+                              disabled={
+                                deletingExamId === exam.id
+                                || statusUpdatingExamId === exam.id
+                                || revokingExamId === exam.id
+                              }
+                              title="Delete scheduled exam"
+                            >
+                              <FiTrash2 className="h-4 w-4" />
+                              {deletingExamId === exam.id ? 'Deleting...' : 'Delete'}
+                            </Button>
+                            <Button
+                              variant="secondary"
                               className="py-1.5! px-3! inline-flex items-center gap-1.5"
                               onClick={() => openEditModal(exam)}
-                              disabled={statusUpdatingExamId === exam.id}
+                              disabled={statusUpdatingExamId === exam.id || deletingExamId === exam.id}
                             >
                               <FiEdit2 className="h-4 w-4" />
                               Edit

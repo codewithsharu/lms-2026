@@ -23,6 +23,27 @@ const firstTruthyString = (values = []) => {
   return '';
 };
 
+const isFailureStatus = (statusValue) => {
+  const normalized = String(statusValue || '').trim().toLowerCase();
+  return ['failed', 'error', 'fail', 'failure'].includes(normalized);
+};
+
+const isApiFailurePayload = (payload) => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return false;
+  }
+
+  if (isFailureStatus(payload.status)) {
+    return true;
+  }
+
+  if (payload.success === false) {
+    return true;
+  }
+
+  return false;
+};
+
 const extractChallengeId = (payload) => firstTruthyString([
   payload?.challengeId,
   payload?.challenge_id,
@@ -119,9 +140,23 @@ const buildPayloadFromForm = (formState, basePayload = null) => {
     .map((value) => value.trim())
     .filter(Boolean);
 
+  const normalizedProblemIds = (formState.questions || [])
+    .map((question) => String(question?.problemId || '').trim())
+    .filter(Boolean);
+
   const baseChallenge = basePayload?.challenge && typeof basePayload.challenge === 'object' && !Array.isArray(basePayload.challenge)
     ? basePayload.challenge
     : {};
+
+  const challengeProperties = {
+    ...(baseChallenge?.properties && typeof baseChallenge.properties === 'object' ? baseChallenge.properties : {})
+  };
+
+  if (normalizedProblemIds.length > 0) {
+    challengeProperties.problemIds = normalizedProblemIds;
+  } else {
+    delete challengeProperties.problemIds;
+  }
 
   const baseProblems = Array.isArray(basePayload?.problems) ? basePayload.problems : [];
   const baseProblemsById = new Map(
@@ -136,9 +171,7 @@ const buildPayloadFromForm = (formState, basePayload = null) => {
     markdown: String(formState.markdown || '').trim(),
     tags,
     visibility: String(formState.visibility || 'unlisted'),
-    properties: {
-      ...(baseChallenge?.properties && typeof baseChallenge.properties === 'object' ? baseChallenge.properties : {})
-    }
+    properties: challengeProperties
   };
 
   const normalizedChallengeId = String(formState.challengeId || '').trim();
@@ -511,7 +544,11 @@ const ChallengeCreator = () => {
 
       const isEditMode = Boolean(sourceChallengeId);
       const fallbackChallengeId = getEditablePayloadChallengeId(requestPayload);
-      const targetChallengeId = firstTruthyString([sourceChallengeId, fallbackChallengeId]);
+      const targetChallengeId = firstTruthyString([
+        requestPayload?.challenge?._id,
+        sourceChallengeId,
+        fallbackChallengeId
+      ]);
 
       if (isEditMode && !targetChallengeId) {
         throw new Error('Challenge ID is missing for update');
@@ -532,6 +569,16 @@ const ChallengeCreator = () => {
         ? await compilerAPI.updateChallenge(targetChallengeId, normalizedRequestPayload)
         : await compilerAPI.createChallenge(normalizedRequestPayload);
 
+      if (isApiFailurePayload(response.data)) {
+        throw new Error(
+          firstTruthyString([
+            response.data?.error,
+            response.data?.message,
+            sourceChallengeId ? 'Challenge update failed' : 'Challenge creation failed'
+          ])
+        );
+      }
+
       const editableResponsePayload = extractEditablePayload(response.data);
       const syncedPayload = editableResponsePayload || normalizedRequestPayload;
 
@@ -540,13 +587,21 @@ const ChallengeCreator = () => {
       setJsonInput(JSON.stringify(syncedPayload, null, 2));
       setResult(response.data);
 
+      const recreatedByBackend = response.data?._meta?.recreated === true;
+      const recreatedChallengeId = extractChallengeId(response.data);
+
       if (sourceChallengeId) {
-        toast.success('Challenge updated successfully');
+        toast.success(
+          recreatedByBackend
+            ? `Challenge updated by creating a new version${recreatedChallengeId ? ` (${recreatedChallengeId})` : ''}`
+            : 'Challenge updated successfully'
+        );
       } else {
         toast.success('Challenge created successfully');
       }
     } catch (requestError) {
       const message = requestError.response?.data?.error
+        || requestError.message
         || (sourceChallengeId ? 'Challenge update failed' : 'Challenge creation failed');
       setError(message);
       toast.error(message);

@@ -948,6 +948,101 @@ const calculateAttemptSummary = (questions, rawAnswers, configuredTotalMarks) =>
   };
 };
 
+const submitAttemptWithScoring = async ({
+  attempt,
+  incomingAnswers = {},
+  forceAutoSubmit = false
+}) => {
+  const questions = normalizeQuestionList(attempt?.hosted?.template?.template_data);
+
+  if (questions.length === 0) {
+    const configError = new Error('Assessment questions are not configured');
+    configError.statusCode = 400;
+    throw configError;
+  }
+
+  const safeIncomingAnswers = incomingAnswers && typeof incomingAnswers === 'object'
+    ? incomingAnswers
+    : {};
+  const remainingSeconds = getRemainingSeconds(attempt, attempt.hosted);
+  const submittedStatus = (parseBooleanInput(forceAutoSubmit, false) || remainingSeconds <= 0)
+    ? 'auto_submitted'
+    : 'submitted';
+  const mergedAnswers = {
+    ...(attempt.answers && typeof attempt.answers === 'object' ? attempt.answers : {}),
+    ...safeIncomingAnswers
+  };
+
+  const mcqSummary = calculateAttemptSummary(
+    questions,
+    mergedAnswers,
+    attempt.hosted?.template?.total_marks
+  );
+
+  const codingSummary = await calculateCodingSummary({
+    codingSection: attempt.hosted?.coding_section,
+    rawAnswers: mergedAnswers
+  });
+
+  const finalScore = roundToTwo(mcqSummary.score + codingSummary.score);
+  const finalTotalMarks = roundToTwo(mcqSummary.totalMarks + codingSummary.totalMarks);
+  const finalPercentage = finalTotalMarks > 0
+    ? roundToTwo((finalScore / finalTotalMarks) * 100)
+    : 0;
+  const finalCorrectCount = mcqSummary.correctCount + codingSummary.passedQuestionCount;
+  const finalTotalQuestions = mcqSummary.totalQuestions + codingSummary.totalQuestionCount;
+
+  const metadataAnswers = Object.fromEntries(
+    Object.entries(mergedAnswers).filter(([key]) => key.startsWith('__'))
+  );
+  const finalAnswers = {
+    ...mcqSummary.normalizedAnswers,
+    ...metadataAnswers
+  };
+
+  const codingSection = normalizeCodingSection(attempt.hosted?.coding_section);
+  if (codingSection) {
+    const nowIso = new Date().toISOString();
+    const sectionState = getAttemptSectionState(finalAnswers);
+    finalAnswers[ATTEMPT_SECTION_META_KEY] = {
+      currentSection: 'coding',
+      mcqCompletedAt: sectionState.mcqCompletedAt || nowIso,
+      codingEnteredAt: sectionState.codingEnteredAt || nowIso
+    };
+  }
+
+  const { data: updatedAttempt, error: updateError } = await supabase
+    .from('assessment_attempts')
+    .update({
+      status: submittedStatus,
+      answers: finalAnswers,
+      score: finalScore,
+      total_marks: finalTotalMarks,
+      percentage: finalPercentage,
+      correct_count: finalCorrectCount,
+      total_questions: finalTotalQuestions,
+      submitted_at: new Date().toISOString()
+    })
+    .eq('id', attempt.id)
+    .select('*')
+    .single();
+
+  if (updateError) {
+    throw updateError;
+  }
+
+  const resultVisible = (
+    attempt.hosted?.result_mode === 'immediate' ||
+    (attempt.hosted?.result_mode === 'after_end' && attempt.hosted?.end_time && new Date() > new Date(attempt.hosted.end_time))
+  );
+
+  return {
+    updatedAttempt,
+    resultVisible,
+    resultMode: attempt.hosted?.result_mode
+  };
+};
+
 const getStudentDetail = async (userId) => {
   const { data, error } = await supabase
     .from('student_details')
@@ -1626,6 +1721,87 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
   }
 });
 
+// Teacher: delete hosted exam and auto-unassign targeted students
+router.delete('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: existingHostedExam, error: existingError } = await supabase
+      .from('hosted_assessments')
+      .select('id')
+      .eq('id', id)
+      .eq('host_id', req.user.id)
+      .single();
+
+    if (existingError && isMissingHostedTableError(existingError)) {
+      return res.status(503).json({
+        error: 'Assessment module is not initialized yet. Please run migration when DB access is available.',
+        setupRequired: true
+      });
+    }
+
+    if (existingError || !existingHostedExam) {
+      return res.status(404).json({ error: 'Hosted exam not found for this teacher' });
+    }
+
+    let deletedAttemptCount = 0;
+
+    const { data: removedAttempts, error: attemptDeleteError } = await supabase
+      .from('assessment_attempts')
+      .delete()
+      .eq('hosted_assessment_id', id)
+      .select('id');
+
+    if (attemptDeleteError && !isMissingAttemptTableError(attemptDeleteError)) {
+      throw attemptDeleteError;
+    }
+
+    if (!attemptDeleteError) {
+      deletedAttemptCount = Array.isArray(removedAttempts) ? removedAttempts.length : 0;
+    }
+
+    let unassignedStudentCount = 0;
+
+    const { data: removedTargets, error: targetDeleteError } = await supabase
+      .from('hosted_assessment_student_targets')
+      .delete()
+      .eq('hosted_assessment_id', id)
+      .select('student_id');
+
+    if (targetDeleteError && !isMissingHostedTargetTableError(targetDeleteError)) {
+      throw targetDeleteError;
+    }
+
+    if (!targetDeleteError) {
+      unassignedStudentCount = Array.isArray(removedTargets) ? removedTargets.length : 0;
+    }
+
+    const { data: deletedHostedExam, error: deleteError } = await supabase
+      .from('hosted_assessments')
+      .delete()
+      .eq('id', id)
+      .eq('host_id', req.user.id)
+      .select('id')
+      .single();
+
+    if (deleteError) throw deleteError;
+
+    if (!deletedHostedExam) {
+      return res.status(404).json({ error: 'Hosted exam not found for this teacher' });
+    }
+
+    return res.json({
+      message: 'Scheduled exam deleted successfully. Assigned students and submission records were removed.',
+      hostedExamId: id,
+      unassignedStudentCount,
+      deletedAttemptCount
+    });
+  } catch (error) {
+    console.error('Delete hosted exam error:', error);
+    return res.status(500).json({ error: getApiErrorMessage(error, 'Failed to delete hosted exam') });
+  }
+});
+
 // Teacher metrics
 router.get('/metrics/teacher', verifyToken, hasRole('teacher'), async (req, res) => {
   try {
@@ -1886,9 +2062,38 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
     let activeAttempt = existingInProgress || null;
 
     if (activeAttempt && hostedExam.allow_resume === false) {
-      return res.status(400).json({
-        error: 'Resume is disabled for this assessment by your teacher'
-      });
+      try {
+        const { updatedAttempt, resultVisible, resultMode } = await submitAttemptWithScoring({
+          attempt: {
+            ...activeAttempt,
+            hosted: hostedExam
+          },
+          forceAutoSubmit: true
+        });
+
+        return res.status(409).json({
+          error: 'Resume is disabled for this assessment. Your previous in-progress attempt was auto-submitted.',
+          autoSubmittedAttempt: {
+            id: updatedAttempt.id,
+            status: updatedAttempt.status,
+            score: updatedAttempt.score,
+            total_marks: updatedAttempt.total_marks,
+            percentage: updatedAttempt.percentage,
+            correct_count: updatedAttempt.correct_count,
+            total_questions: updatedAttempt.total_questions,
+            submitted_at: updatedAttempt.submitted_at,
+            attempt_number: updatedAttempt.attempt_number
+          },
+          resultVisible,
+          resultMode
+        });
+      } catch (autoSubmitError) {
+        if (autoSubmitError?.statusCode === 400) {
+          return res.status(400).json({ error: autoSubmitError.message });
+        }
+
+        throw autoSubmitError;
+      }
     }
 
     if (!activeAttempt) {
@@ -1983,7 +2188,7 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
     const forceTakeover = String(req.query?.forceTakeover || '').toLowerCase() === 'true';
     const sessionToken = getExamSessionToken(req);
 
-    const { data: attempt, error: attemptError } = await supabase
+    let { data: attempt, error: attemptError } = await supabase
       .from('assessment_attempts')
       .select(`
         *,
@@ -2015,8 +2220,9 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
 
     const sessionMeta = getAttemptSessionMeta(attempt.answers);
     const hasDifferentSession = Boolean(sessionMeta.token && sessionToken && sessionMeta.token !== sessionToken);
+    const shouldEnforceSessionLock = attempt.status === 'in_progress';
 
-    if (hasDifferentSession && !forceTakeover) {
+    if (shouldEnforceSessionLock && hasDifferentSession && !forceTakeover) {
       return res.status(409).json(buildSessionConflictResponse(
         'This attempt is active in another browser session. Resume here to safely continue.',
         attempt.id
@@ -2025,7 +2231,7 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
 
     let resolvedAttempt = attempt;
 
-    if (sessionToken && (!sessionMeta.token || forceTakeover)) {
+    if (shouldEnforceSessionLock && sessionToken && (!sessionMeta.token || forceTakeover)) {
       const { data: updatedAttempt, error: updateError } = await supabase
         .from('assessment_attempts')
         .update({
@@ -2191,7 +2397,8 @@ router.post('/student/attempts/:attemptId/mark-mcq-complete', verifyToken, hasRo
 router.post('/student/attempts/:attemptId/submit', verifyToken, hasRole('student'), async (req, res) => {
   try {
     const { attemptId } = req.params;
-    const { answers = {}, forceAutoSubmit = false } = req.body || {};
+    const { answers = {}, forceAutoSubmit: rawForceAutoSubmit = false } = req.body || {};
+    const forceAutoSubmit = parseBooleanInput(rawForceAutoSubmit, false);
 
     const { data: attempt, error: attemptError } = await supabase
       .from('assessment_attempts')
@@ -2237,83 +2444,32 @@ router.post('/student/attempts/:attemptId/submit', verifyToken, hasRole('student
       });
     }
 
-    const questions = normalizeQuestionList(attempt.hosted?.template?.template_data);
-    if (questions.length === 0) {
-      return res.status(400).json({ error: 'Assessment questions are not configured' });
+    let submissionResult;
+
+    try {
+      submissionResult = await submitAttemptWithScoring({
+        attempt,
+        incomingAnswers: answers,
+        forceAutoSubmit
+      });
+    } catch (submissionError) {
+      if (submissionError?.statusCode === 400) {
+        return res.status(400).json({ error: submissionError.message });
+      }
+
+      throw submissionError;
     }
 
-    const remainingSeconds = getRemainingSeconds(attempt, attempt.hosted);
-    const submittedStatus = (forceAutoSubmit || remainingSeconds <= 0) ? 'auto_submitted' : 'submitted';
-    const mergedAnswers = {
-      ...(attempt.answers && typeof attempt.answers === 'object' ? attempt.answers : {}),
-      ...(answers && typeof answers === 'object' ? answers : {})
-    };
-
-    const mcqSummary = calculateAttemptSummary(
-      questions,
-      mergedAnswers,
-      attempt.hosted?.template?.total_marks
-    );
-
-    const codingSummary = await calculateCodingSummary({
-      codingSection: attempt.hosted?.coding_section,
-      rawAnswers: mergedAnswers
-    });
-
-    const finalScore = roundToTwo(mcqSummary.score + codingSummary.score);
-    const finalTotalMarks = roundToTwo(mcqSummary.totalMarks + codingSummary.totalMarks);
-    const finalPercentage = finalTotalMarks > 0
-      ? roundToTwo((finalScore / finalTotalMarks) * 100)
-      : 0;
-    const finalCorrectCount = mcqSummary.correctCount + codingSummary.passedQuestionCount;
-    const finalTotalQuestions = mcqSummary.totalQuestions + codingSummary.totalQuestionCount;
-
-    const metadataAnswers = Object.fromEntries(
-      Object.entries(mergedAnswers).filter(([key]) => key.startsWith('__'))
-    );
-    const finalAnswers = {
-      ...mcqSummary.normalizedAnswers,
-      ...metadataAnswers
-    };
-
-    const codingSection = normalizeCodingSection(attempt.hosted?.coding_section);
-    if (codingSection) {
-      const nowIso = new Date().toISOString();
-      const sectionState = getAttemptSectionState(finalAnswers);
-      finalAnswers[ATTEMPT_SECTION_META_KEY] = {
-        currentSection: 'coding',
-        mcqCompletedAt: sectionState.mcqCompletedAt || nowIso,
-        codingEnteredAt: sectionState.codingEnteredAt || nowIso
-      };
-    }
-
-    const { data: updatedAttempt, error: updateError } = await supabase
-      .from('assessment_attempts')
-      .update({
-        status: submittedStatus,
-        answers: finalAnswers,
-        score: finalScore,
-        total_marks: finalTotalMarks,
-        percentage: finalPercentage,
-        correct_count: finalCorrectCount,
-        total_questions: finalTotalQuestions,
-        submitted_at: new Date().toISOString()
-      })
-      .eq('id', attempt.id)
-      .select('*')
-      .single();
-
-    if (updateError) throw updateError;
-
-    const resultVisible = (
-      attempt.hosted?.result_mode === 'immediate' ||
-      (attempt.hosted?.result_mode === 'after_end' && attempt.hosted?.end_time && new Date() > new Date(attempt.hosted.end_time))
-    );
+    const {
+      updatedAttempt,
+      resultVisible,
+      resultMode
+    } = submissionResult;
 
     res.json({
       message: 'Attempt submitted successfully',
       resultVisible,
-      resultMode: attempt.hosted?.result_mode,
+      resultMode,
       attempt: {
         id: updatedAttempt.id,
         status: updatedAttempt.status,

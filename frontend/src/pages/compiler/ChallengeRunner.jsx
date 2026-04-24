@@ -112,6 +112,50 @@ const buildCaseResult = ({ testCase, execution, ignoreCase }) => {
   };
 };
 
+const normalizeTokenizedInputForRetry = (rawInput) => {
+  const normalized = toStringValue(rawInput).replace(/\r\n/g, '\n');
+  const trimmed = normalized.trim();
+
+  if (!trimmed || trimmed.includes('\n')) {
+    return normalized;
+  }
+
+  if (!/\s+/.test(trimmed)) {
+    return normalized;
+  }
+
+  return trimmed.split(/\s+/).join('\n');
+};
+
+const RETRY_TOKENIZED_INPUT_LANGUAGES = new Set(['python', 'java', 'c', 'cpp']);
+
+const shouldRetryTokenizedInputFormat = ({ language, testCase, result }) => {
+  const normalizedLanguage = toStringValue(language).toLowerCase();
+
+  if (!RETRY_TOKENIZED_INPUT_LANGUAGES.has(normalizedLanguage)) {
+    return false;
+  }
+
+  if (result?.passed) {
+    return false;
+  }
+
+  const input = toStringValue(testCase?.input);
+  const trimmedInput = input.trim();
+
+  if (!trimmedInput || trimmedInput.includes('\n') || !/\s+/.test(trimmedInput)) {
+    return false;
+  }
+
+  const normalizedRetryInput = normalizeTokenizedInputForRetry(input);
+
+  if (normalizedRetryInput === input) {
+    return false;
+  }
+
+  return true;
+};
+
 const parseExecutionMs = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -451,6 +495,10 @@ const ChallengeRunner = () => {
   }, [isResizing, isEmbeddedMode]);
 
   const fileName = useMemo(() => {
+    if (language === 'java') {
+      return 'Main.java';
+    }
+
     const extension = languageMap[language]?.extension || 'txt';
     return `main.${extension}`;
   }, [language]);
@@ -652,11 +700,51 @@ const ChallengeRunner = () => {
     });
 
     const rows = normalizeBatchResponse(response.data);
-    return selectedCases.map((testCase, index) => buildCaseResult({
+    const initialResults = selectedCases.map((testCase, index) => buildCaseResult({
       testCase,
       execution: rows[index] || {},
       ignoreCase
     }));
+
+    const retryEntries = initialResults
+      .map((result, index) => ({
+        index,
+        testCase: selectedCases[index],
+        result
+      }))
+      .filter((entry) => shouldRetryTokenizedInputFormat({
+        language,
+        testCase: entry.testCase,
+        result: entry.result
+      }));
+
+    if (retryEntries.length === 0) {
+      return initialResults;
+    }
+
+    const retryResponse = await compilerAPI.runCode({
+      language,
+      fileName,
+      code: activeCode,
+      stdin: retryEntries.map((entry) => normalizeTokenizedInputForRetry(entry.testCase.input))
+    });
+
+    const retryRows = normalizeBatchResponse(retryResponse.data);
+    const mergedResults = [...initialResults];
+
+    retryEntries.forEach((entry, retryIndex) => {
+      const retriedResult = buildCaseResult({
+        testCase: entry.testCase,
+        execution: retryRows[retryIndex] || {},
+        ignoreCase
+      });
+
+      if (!retriedResult.stderr) {
+        mergedResults[entry.index] = retriedResult;
+      }
+    });
+
+    return mergedResults;
   };
 
   const runCompileCheck = async () => {

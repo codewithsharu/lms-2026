@@ -8,6 +8,8 @@ import Modal from '../../components/ui/Modal';
 import { assessmentAPI, compilerAPI } from '../../services/api';
 import { getExamSessionToken } from '../../utils/examSession';
 
+const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
+
 const formatTimer = (seconds) => {
   const safe = Math.max(0, Number(seconds || 0));
   const mm = String(Math.floor(safe / 60)).padStart(2, '0');
@@ -374,6 +376,7 @@ const AssessmentAttempt = () => {
   const hasAutoSubmittedRef = useRef(false);
   const sessionTokenRef = useRef(getExamSessionToken());
   const skipNextAutosaveRef = useRef(true);
+  const exitAutoSubmitTriggeredRef = useRef(false);
   const hasBootstrapAttemptRef = useRef(false);
   const codingFrameRef = useRef(null);
   const codingFramePollingRef = useRef(null);
@@ -622,6 +625,10 @@ const AssessmentAttempt = () => {
   }, [attemptId, isPreviewMode, previewConfig, location.state]);
 
   useEffect(() => {
+    exitAutoSubmitTriggeredRef.current = false;
+  }, [attemptData?.attempt?.id]);
+
+  useEffect(() => {
     if (isPreviewMode) {
       return undefined;
     }
@@ -661,15 +668,96 @@ const AssessmentAttempt = () => {
     if (isPreviewMode) return;
     if (!attemptData || submittedSummary) return;
 
+    const shouldAutoSubmitOnExit = (
+      attemptData?.attempt?.status === 'in_progress' &&
+      attemptData?.hostedAssessment?.allow_resume === false
+    );
+    const currentAttemptId = attemptData?.attempt?.id;
+
+    const triggerExitAutoSubmit = () => {
+      if (!shouldAutoSubmitOnExit || !currentAttemptId || exitAutoSubmitTriggeredRef.current) {
+        return;
+      }
+
+      exitAutoSubmitTriggeredRef.current = true;
+
+      const endpoint = `${API_URL}/assessments/student/attempts/${encodeURIComponent(currentAttemptId)}/submit`;
+      const payload = {
+        answers: buildAutosavePayload(
+          questions,
+          answers,
+          savedResponses,
+          markedForReview,
+          currentSection,
+          sectionCompletionOrder,
+          codingSubmissions
+        ),
+        forceAutoSubmit: true,
+        sessionToken: sessionTokenRef.current
+      };
+
+      try {
+        const request = fetch(endpoint, {
+          method: 'POST',
+          credentials: 'include',
+          keepalive: true,
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (request && typeof request.catch === 'function') {
+          request.catch(() => {});
+        }
+      } catch {
+        // Best-effort exit submit should not block browser navigation.
+      }
+
+      try {
+        if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+          const beaconPayload = new URLSearchParams({
+            forceAutoSubmit: 'true',
+            sessionToken: sessionTokenRef.current || ''
+          });
+
+          navigator.sendBeacon(endpoint, beaconPayload);
+        }
+      } catch {
+        // Ignore beacon errors; submit is also attempted via keepalive fetch.
+      }
+    };
+
     const onBeforeUnload = (event) => {
+      triggerExitAutoSubmit();
       event.preventDefault();
       event.returnValue = '';
       return '';
     };
 
+    const onPageHide = () => {
+      triggerExitAutoSubmit();
+    };
+
     window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [attemptData, submittedSummary, isPreviewMode]);
+    window.addEventListener('pagehide', onPageHide);
+
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [
+    attemptData,
+    submittedSummary,
+    isPreviewMode,
+    questions,
+    answers,
+    savedResponses,
+    markedForReview,
+    currentSection,
+    sectionCompletionOrder,
+    codingSubmissions
+  ]);
 
   useEffect(() => {
     if (!attemptData || submittedSummary) return;

@@ -130,6 +130,7 @@ export const assessmentAPI = {
   getHostedExams: () => api.get('/assessments/hosted'),
   hostExam: (data) => api.post('/assessments/hosted', data),
   updateHostedExam: (id, data) => api.put(`/assessments/hosted/${id}`, data),
+  deleteHostedExam: (id) => api.delete(`/assessments/hosted/${id}`),
   getTeacherMetrics: () => api.get('/assessments/metrics/teacher'),
 
   // Admin/Student
