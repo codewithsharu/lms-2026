@@ -287,17 +287,89 @@ const cleanupUserDependencies = async ({ userId, role }) => {
 // Get all users (Admin only)
 router.get('/', verifyToken, isAdmin, async (req, res) => {
   try {
-    const { role, class_id, section_id, zone, search, page = 1, limit = 20 } = req.query;
-    const offset = (page - 1) * limit;
+    const {
+      role,
+      class_id,
+      section_id,
+      zone,
+      assignment_status,
+      search,
+      page = 1,
+      limit = 20
+    } = req.query;
+
+    const normalizedRole = String(role || '').trim().toLowerCase();
+    const normalizedAssignmentStatus = String(assignment_status || '').trim().toLowerCase();
+    const effectiveRole = normalizedRole || (normalizedAssignmentStatus ? 'student' : '');
+    const pageNumber = Math.max(1, parseInt(page, 10) || 1);
+    const limitNumber = Math.max(1, parseInt(limit, 10) || 20);
+    const offset = (pageNumber - 1) * limitNumber;
+
+    if (normalizedAssignmentStatus && !['assigned', 'unassigned'].includes(normalizedAssignmentStatus)) {
+      return res.status(400).json({ error: 'assignment_status must be either assigned or unassigned' });
+    }
+
+    let filteredStudentUserIds = null;
+    const hasStudentScopeFilters =
+      Boolean(class_id) ||
+      Boolean(section_id) ||
+      Boolean(zone) ||
+      Boolean(normalizedAssignmentStatus);
+
+    if (effectiveRole === 'student' && hasStudentScopeFilters) {
+      let studentFilterQuery = supabase
+        .from('student_details')
+        .select('user_id');
+
+      if (normalizedAssignmentStatus === 'assigned') {
+        studentFilterQuery = studentFilterQuery.not('class_id', 'is', null);
+      } else if (normalizedAssignmentStatus === 'unassigned') {
+        studentFilterQuery = studentFilterQuery.is('class_id', null);
+      }
+
+      if (class_id) {
+        studentFilterQuery = studentFilterQuery.eq('class_id', class_id);
+      }
+
+      if (section_id) {
+        studentFilterQuery = studentFilterQuery.eq('section_id', section_id);
+      }
+
+      if (zone) {
+        studentFilterQuery = studentFilterQuery.eq('zone', zone);
+      }
+
+      const { data: scopedStudentRows, error: scopedStudentError } = await studentFilterQuery;
+
+      if (scopedStudentError) throw scopedStudentError;
+
+      filteredStudentUserIds = Array.from(new Set((scopedStudentRows || []).map((row) => row.user_id).filter(Boolean)));
+
+      if (filteredStudentUserIds.length === 0) {
+        return res.json({
+          users: [],
+          pagination: {
+            total: 0,
+            page: pageNumber,
+            limit: limitNumber,
+            totalPages: 0
+          }
+        });
+      }
+    }
 
     let query = supabase
       .from('users')
       .select('id, email, full_name, phone, profile_photo, role, is_active, created_at, last_login', { count: 'exact' })
       .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+      .range(offset, offset + limitNumber - 1);
 
-    if (role) {
-      query = query.eq('role', role);
+    if (effectiveRole) {
+      query = query.eq('role', effectiveRole);
+    }
+
+    if (filteredStudentUserIds && filteredStudentUserIds.length > 0) {
+      query = query.in('id', filteredStudentUserIds);
     }
 
     if (search) {
@@ -339,9 +411,9 @@ router.get('/', verifyToken, isAdmin, async (req, res) => {
       users: usersWithDetails,
       pagination: {
         total: count,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        totalPages: Math.ceil(count / limit)
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.ceil(count / limitNumber)
       }
     });
 
