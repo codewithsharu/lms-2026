@@ -290,8 +290,8 @@ const ClassManagement = () => {
 
     try {
       if (deleteTarget.type === 'class') {
-        await classAPI.delete(deleteTarget.item.id);
-        toast.success('Class deleted successfully');
+        const response = await classAPI.delete(deleteTarget.item.id);
+        toast.success(response.data?.message || 'Class deleted successfully');
 
         if (expandedClass === deleteTarget.item.id) {
           setExpandedClass(null);

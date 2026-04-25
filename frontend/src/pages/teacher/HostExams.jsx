@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { FiClock, FiCode, FiEdit2, FiEye, FiPlayCircle, FiPlus, FiRotateCcw, FiSave, FiTrash2 } from 'react-icons/fi';
+import { FiClock, FiCode, FiEdit2, FiEye, FiPlayCircle, FiPlus, FiRotateCcw, FiSave, FiTrash2, FiUnlock } from 'react-icons/fi';
 import Layout from '../../components/Layout';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
@@ -138,6 +138,7 @@ const HostExams = () => {
   const [challengeSearch, setChallengeSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [revokingExamId, setRevokingExamId] = useState(null);
+  const [releasingResultsExamId, setReleasingResultsExamId] = useState(null);
   const [deletingExamId, setDeletingExamId] = useState(null);
   const [statusUpdatingExamId, setStatusUpdatingExamId] = useState(null);
   const [selectedExam, setSelectedExam] = useState(null);
@@ -564,6 +565,26 @@ const HostExams = () => {
     }
   };
 
+  const handleReleaseResults = async (exam) => {
+    if (!exam?.id || exam.result_mode !== 'manual') return;
+
+    const confirmed = window.confirm(
+      'Release results now? Already submitted attempts will become visible immediately, and future submissions will also show results immediately.'
+    );
+    if (!confirmed) return;
+
+    try {
+      setReleasingResultsExamId(exam.id);
+      const response = await assessmentAPI.releaseHostedExamResults(exam.id);
+      toast.success(response.data?.message || 'Results released successfully');
+      fetchHostedExams();
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to release results');
+    } finally {
+      setReleasingResultsExamId(null);
+    }
+  };
+
   const handleDeleteExam = async (exam) => {
     if (!exam?.id) return;
 
@@ -711,12 +732,29 @@ const HostExams = () => {
                               disabled={
                                 statusUpdatingExamId === exam.id
                                 || revokingExamId === exam.id
+                                || releasingResultsExamId === exam.id
                                 || deletingExamId === exam.id
                               }
                             >
                               <FiEye className="h-4 w-4" />
                               Preview
                             </Button>
+                            {exam.result_mode === 'manual' && ['published', 'closed'].includes(exam.publish_status) && (
+                              <Button
+                                variant="secondary"
+                                className="py-1.5! px-3! border-emerald-200! bg-emerald-50! text-emerald-700! hover:bg-emerald-100! inline-flex items-center gap-1.5"
+                                onClick={() => handleReleaseResults(exam)}
+                                disabled={
+                                  releasingResultsExamId === exam.id
+                                  || revokingExamId === exam.id
+                                  || statusUpdatingExamId === exam.id
+                                  || deletingExamId === exam.id
+                                }
+                              >
+                                <FiUnlock className="h-4 w-4" />
+                                {releasingResultsExamId === exam.id ? 'Releasing...' : 'Release Results'}
+                              </Button>
+                            )}
                             {exam.publish_status === 'published' && (
                               <Button
                                 variant="secondary"
@@ -724,6 +762,7 @@ const HostExams = () => {
                                 onClick={() => handleRevokeExam(exam)}
                                 disabled={
                                   revokingExamId === exam.id
+                                  || releasingResultsExamId === exam.id
                                   || statusUpdatingExamId === exam.id
                                   || deletingExamId === exam.id
                                 }
@@ -740,6 +779,7 @@ const HostExams = () => {
                                 deletingExamId === exam.id
                                 || statusUpdatingExamId === exam.id
                                 || revokingExamId === exam.id
+                                || releasingResultsExamId === exam.id
                               }
                               title="Delete scheduled exam"
                             >
@@ -750,7 +790,11 @@ const HostExams = () => {
                               variant="secondary"
                               className="py-1.5! px-3! inline-flex items-center gap-1.5"
                               onClick={() => openEditModal(exam)}
-                              disabled={statusUpdatingExamId === exam.id || deletingExamId === exam.id}
+                              disabled={
+                                statusUpdatingExamId === exam.id
+                                || deletingExamId === exam.id
+                                || releasingResultsExamId === exam.id
+                              }
                             >
                               <FiEdit2 className="h-4 w-4" />
                               Edit

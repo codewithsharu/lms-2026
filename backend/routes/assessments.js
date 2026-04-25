@@ -1033,7 +1033,7 @@ const submitAttemptWithScoring = async ({
 
   const resultVisible = (
     attempt.hosted?.result_mode === 'immediate' ||
-    (attempt.hosted?.result_mode === 'after_end' && attempt.hosted?.end_time && new Date() > new Date(attempt.hosted.end_time))
+    (attempt.hosted?.result_mode === 'after_end' && attempt.hosted?.end_time && new Date() >= new Date(attempt.hosted.end_time))
   );
 
   return {
@@ -1718,6 +1718,62 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
   } catch (error) {
     console.error('Update hosted exam error:', error);
     res.status(500).json({ error: getApiErrorMessage(error, 'Failed to update hosted exam') });
+  }
+});
+
+// Teacher: manually release results for exams configured with manual mode.
+// Once released, result mode is switched to immediate so existing and future submissions are visible right away.
+router.post('/hosted/:id/release-results', verifyToken, hasRole('teacher'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: hostedExam, error: hostedExamError } = await supabase
+      .from('hosted_assessments')
+      .select('id, host_id, result_mode, publish_status, exam_title, template_id')
+      .eq('id', id)
+      .eq('host_id', req.user.id)
+      .single();
+
+    if (hostedExamError && isMissingHostedTableError(hostedExamError)) {
+      return res.status(503).json({
+        error: 'Assessment module is not initialized yet. Please run migration when DB access is available.',
+        setupRequired: true
+      });
+    }
+
+    if (hostedExamError || !hostedExam) {
+      return res.status(404).json({ error: 'Hosted exam not found for this teacher' });
+    }
+
+    if (hostedExam.publish_status === 'draft') {
+      return res.status(400).json({ error: 'Publish the exam before releasing results' });
+    }
+
+    if (hostedExam.result_mode !== 'manual') {
+      return res.status(400).json({ error: 'Results are already released for this exam' });
+    }
+
+    const { data: updatedHostedExam, error: updateError } = await supabase
+      .from('hosted_assessments')
+      .update({ result_mode: 'immediate' })
+      .eq('id', id)
+      .eq('host_id', req.user.id)
+      .select('*')
+      .single();
+
+    if (updateError) throw updateError;
+
+    if (!updatedHostedExam) {
+      return res.status(404).json({ error: 'Hosted exam not found for this teacher' });
+    }
+
+    return res.json({
+      message: 'Results released manually. Existing and future submissions are now visible immediately.',
+      hostedExam: updatedHostedExam
+    });
+  } catch (error) {
+    console.error('Manual result release error:', error);
+    return res.status(500).json({ error: getApiErrorMessage(error, 'Failed to release results') });
   }
 });
 
@@ -2598,7 +2654,7 @@ router.get('/student/results', verifyToken, hasRole('student'), async (req, res)
         exam_title,
         template:template_id(id, title, subject, question_count, total_marks, passing_percentage)
       `)
-      .eq('publish_status', 'published')
+      .in('publish_status', ['published', 'closed'])
       .order('created_at', { ascending: false });
 
     if (hostedError && isMissingHostedTableError(hostedError)) {
@@ -2652,7 +2708,7 @@ router.get('/student/results', verifyToken, hasRole('student'), async (req, res)
 
       const visible = (
         exam.result_mode === 'immediate' ||
-        (exam.result_mode === 'after_end' && exam.end_time && now > new Date(exam.end_time))
+        (exam.result_mode === 'after_end' && exam.end_time && now >= new Date(exam.end_time))
       );
 
       return {

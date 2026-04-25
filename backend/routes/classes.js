@@ -1370,16 +1370,38 @@ router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check if class has students
-    const { count: studentCount } = await supabase
+    const { data: classData, error: classFetchError } = await supabase
+      .from('classes')
+      .select('id, name')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (classFetchError) throw classFetchError;
+
+    if (!classData) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    const { count: studentCount, error: studentCountError } = await supabase
       .from('student_details')
       .select('*', { count: 'exact', head: true })
       .eq('class_id', id);
 
-    if (studentCount > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete class with enrolled students. Remove students first or deactivate the class.' 
-      });
+    if (studentCountError) throw studentCountError;
+
+    const unassignedStudentCount = Number(studentCount) || 0;
+
+    if (unassignedStudentCount > 0) {
+      const { error: unassignError } = await supabase
+        .from('student_details')
+        .update({
+          class_id: null,
+          section_id: null,
+          zone: null
+        })
+        .eq('class_id', id);
+
+      if (unassignError) throw unassignError;
     }
 
     const { error } = await supabase
@@ -1389,9 +1411,17 @@ router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
 
     if (error) throw error;
 
-    await logAction(req, 'DELETE', 'class', id);
+    await logAction(req, 'DELETE', 'class', id, {
+      class_name: classData.name,
+      unassigned_students: unassignedStudentCount
+    });
 
-    res.json({ message: 'Class deleted successfully' });
+    res.json({
+      message: unassignedStudentCount > 0
+        ? `Class deleted successfully. ${unassignedStudentCount} student(s) moved to unassigned.`
+        : 'Class deleted successfully',
+      unassigned_students: unassignedStudentCount
+    });
   } catch (error) {
     console.error('Delete class error:', error);
     res.status(500).json({ error: 'Internal server error' });
