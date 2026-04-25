@@ -90,9 +90,17 @@ const AssessmentInstructions = () => {
         }
       });
     } catch (error) {
+      if (error.response?.data?.autoSubmittedAttempt) {
+        toast.success('Your previous in-progress attempt was auto-submitted because resume is disabled.');
+        navigate('/student/results');
+        return;
+      }
+
       if (error.response?.status === 409 && error.response?.data?.sessionConflict && error.response?.data?.attemptId) {
         toast.error(error.response?.data?.error || 'This exam is active in another session');
-        navigate(`/student/assessments/attempt/${error.response.data.attemptId}`);
+        navigate(`/student/assessments/attempt/${error.response.data.attemptId}`, {
+          state: { autoTakeoverOnConflict: true }
+        });
       } else {
         toast.error(error.response?.data?.error || 'Failed to start attempt');
       }
@@ -180,7 +188,11 @@ const AssessmentInstructions = () => {
               </div>
               <div className="flex items-start gap-2">
                 <FiLock className="mt-0.5 h-4 w-4 text-slate-500" />
-                <p>Leaving or reloading the page during attempt is discouraged and may interrupt your experience.</p>
+                <p>
+                  {exam.allow_resume === false
+                    ? 'If you leave or reload after starting, the attempt may be auto-submitted using your latest saved answers because resume is disabled.'
+                    : 'Leaving or reloading the page during attempt is discouraged and may interrupt your experience.'}
+                </p>
               </div>
               <div className="flex items-start gap-2">
                 <FiClipboard className="mt-0.5 h-4 w-4 text-slate-500" />

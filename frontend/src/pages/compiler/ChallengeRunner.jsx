@@ -112,6 +112,50 @@ const buildCaseResult = ({ testCase, execution, ignoreCase }) => {
   };
 };
 
+const normalizeTokenizedInputForRetry = (rawInput) => {
+  const normalized = toStringValue(rawInput).replace(/\r\n/g, '\n');
+  const trimmed = normalized.trim();
+
+  if (!trimmed || trimmed.includes('\n')) {
+    return normalized;
+  }
+
+  if (!/\s+/.test(trimmed)) {
+    return normalized;
+  }
+
+  return trimmed.split(/\s+/).join('\n');
+};
+
+const RETRY_TOKENIZED_INPUT_LANGUAGES = new Set(['python', 'java', 'c', 'cpp']);
+
+const shouldRetryTokenizedInputFormat = ({ language, testCase, result }) => {
+  const normalizedLanguage = toStringValue(language).toLowerCase();
+
+  if (!RETRY_TOKENIZED_INPUT_LANGUAGES.has(normalizedLanguage)) {
+    return false;
+  }
+
+  if (result?.passed) {
+    return false;
+  }
+
+  const input = toStringValue(testCase?.input);
+  const trimmedInput = input.trim();
+
+  if (!trimmedInput || trimmedInput.includes('\n') || !/\s+/.test(trimmedInput)) {
+    return false;
+  }
+
+  const normalizedRetryInput = normalizeTokenizedInputForRetry(input);
+
+  if (normalizedRetryInput === input) {
+    return false;
+  }
+
+  return true;
+};
+
 const parseExecutionMs = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -189,7 +233,9 @@ const ChallengeRunner = () => {
   const [testCaseResults, setTestCaseResults] = useState([]);
   const [selectedTestCaseId, setSelectedTestCaseId] = useState(null);
   const [testPanelView, setTestPanelView] = useState('testcase');
+  const [hasSubmissionRun, setHasSubmissionRun] = useState(false);
   const [attemptedQuestionIndexes, setAttemptedQuestionIndexes] = useState([]);
+  const [passedQuestionIndexes, setPassedQuestionIndexes] = useState([]);
 
   const [leftPanePercent, setLeftPanePercent] = useState(() => (isEmbeddedMode ? 50 : 36));
   const [isResizing, setIsResizing] = useState(false);
@@ -220,6 +266,13 @@ const ChallengeRunner = () => {
     return problems[selectedProblemIndex] || problems[0] || null;
   }, [problems, selectedProblemIndex]);
 
+  const challengeQuestionScores = useMemo(() => (
+    problems.map((problem) => {
+      const rawScore = Number(problem?.properties?.score);
+      return Number.isFinite(rawScore) && rawScore > 0 ? rawScore : 1;
+    })
+  ), [problems]);
+
   const currentQuestionNumber = problems.length > 0 ? selectedProblemIndex + 1 : 0;
   const attemptedCount = attemptedQuestionIndexes.length;
   const isAttemptedComplete = problems.length > 0 && attemptedCount === problems.length;
@@ -246,6 +299,18 @@ const ChallengeRunner = () => {
       )
     ).sort((left, right) => left - right);
 
+    const normalizedPassedIndexes = Array.from(
+      new Set(
+        (Array.isArray(passedQuestionIndexes) ? passedQuestionIndexes : [])
+          .map((entry) => Number.parseInt(String(entry), 10))
+          .filter((entry) => Number.isInteger(entry) && entry >= 0)
+      )
+    ).sort((left, right) => left - right);
+
+    const totalPossibleScore = Number(
+      challengeQuestionScores.reduce((sum, score) => sum + Number(score || 0), 0).toFixed(2)
+    );
+
     window.parent.postMessage(
       {
         type: EMBEDDED_CODING_PROGRESS_EVENT,
@@ -253,11 +318,24 @@ const ChallengeRunner = () => {
         challengeId,
         attemptedQuestionIndexes: normalizedIndexes,
         attemptedQuestionCount: normalizedIndexes.length,
-        totalQuestionCount: problems.length
+        totalQuestionCount: problems.length,
+        passedQuestionIndexes: normalizedPassedIndexes,
+        passedQuestionCount: normalizedPassedIndexes.length,
+        allTestCasesPassed: problems.length > 0 && normalizedPassedIndexes.length === problems.length,
+        questionScores: challengeQuestionScores,
+        totalPossibleScore
       },
       window.location.origin
     );
-  }, [isEmbeddedMode, challengeMeta.id, initialChallengeId, attemptedQuestionIndexes, problems.length]);
+  }, [
+    isEmbeddedMode,
+    challengeMeta.id,
+    initialChallengeId,
+    attemptedQuestionIndexes,
+    passedQuestionIndexes,
+    problems.length,
+    challengeQuestionScores
+  ]);
 
   const currentQuestionStatement = useMemo(() => {
     if (!currentProblem) return '';
@@ -278,7 +356,7 @@ const ChallengeRunner = () => {
     }));
   }, [currentProblem]);
 
-  const sampleCase = useMemo(() => testCases[0] || null, [testCases]);
+  const exampleTestCases = useMemo(() => testCases.slice(0, 2), [testCases]);
 
   const ignoreCase = currentProblem?.properties?.options?.code?.ignoreCase !== false;
 
@@ -293,33 +371,33 @@ const ChallengeRunner = () => {
     return ['python', 'java', 'c', 'cpp'];
   }, [currentProblem]);
 
-  const evaluatedTestCases = useMemo(() => {
-    if (!sampleCase) {
+  const compilePreviewTestCases = useMemo(() => {
+    if (exampleTestCases.length > 0) {
+      return exampleTestCases;
+    }
+
+    return testCases;
+  }, [exampleTestCases, testCases]);
+
+  const visibleTestCases = useMemo(() => {
+    if (hasSubmissionRun) {
       return testCases;
     }
 
-    return testCases.filter((entry) => entry.id !== sampleCase.id);
-  }, [testCases, sampleCase]);
-
-  const evaluatedTestCaseResults = useMemo(() => {
-    if (!sampleCase) {
-      return testCaseResults;
-    }
-
-    return testCaseResults.filter((entry) => entry.testCase.id !== sampleCase.id);
-  }, [testCaseResults, sampleCase]);
+    return compilePreviewTestCases;
+  }, [hasSubmissionRun, testCases, compilePreviewTestCases]);
 
   const resultByCaseId = useMemo(() => {
-    return new Map(evaluatedTestCaseResults.map((entry) => [entry.testCase.id, entry]));
-  }, [evaluatedTestCaseResults]);
+    return new Map(testCaseResults.map((entry) => [entry.testCase.id, entry]));
+  }, [testCaseResults]);
 
   const selectedTestCase = useMemo(() => {
-    if (!evaluatedTestCases.length) {
+    if (!visibleTestCases.length) {
       return null;
     }
 
-    return evaluatedTestCases.find((entry) => entry.id === selectedTestCaseId) || evaluatedTestCases[0];
-  }, [evaluatedTestCases, selectedTestCaseId]);
+    return visibleTestCases.find((entry) => entry.id === selectedTestCaseId) || visibleTestCases[0];
+  }, [visibleTestCases, selectedTestCaseId]);
 
   const selectedTestCaseResult = useMemo(() => {
     if (!selectedTestCase) {
@@ -329,14 +407,24 @@ const ChallengeRunner = () => {
     return resultByCaseId.get(selectedTestCase.id) || null;
   }, [selectedTestCase, resultByCaseId]);
 
-  const failCount = useMemo(
-    () => evaluatedTestCaseResults.filter((entry) => !entry.passed).length,
-    [evaluatedTestCaseResults]
-  );
-  const hasSubmitted = evaluatedTestCaseResults.length > 0;
+  const failCount = useMemo(() => {
+    if (!hasSubmissionRun) {
+      return 0;
+    }
+
+    return testCaseResults.filter((entry) => !entry.passed).length;
+  }, [hasSubmissionRun, testCaseResults]);
+  const passCount = useMemo(() => {
+    if (!hasSubmissionRun) {
+      return 0;
+    }
+
+    return testCaseResults.filter((entry) => entry.passed).length;
+  }, [hasSubmissionRun, testCaseResults]);
   const hasAnyTestCaseResult = testCaseResults.length > 0;
+  const hasSubmitted = hasSubmissionRun && hasAnyTestCaseResult;
   const allPassed = hasSubmitted && failCount === 0;
-  const isTestPanelUnlocked = hasAnyTestCaseResult;
+  const isTestPanelUnlocked = testCaseResults.length > 0;
 
   useEffect(() => {
     if (supportedLanguages.length === 0) {
@@ -353,6 +441,7 @@ const ChallengeRunner = () => {
     setTestCaseResults([]);
     setSelectedTestCaseId(null);
     setTestPanelView('testcase');
+    setHasSubmissionRun(false);
     setCompileState('idle');
     setCompileErrorDetails('');
     setUseCustomInput(false);
@@ -363,15 +452,15 @@ const ChallengeRunner = () => {
   }, [currentProblem, testCases.length]);
 
   useEffect(() => {
-    if (!evaluatedTestCases.length) {
+    if (!visibleTestCases.length) {
       setSelectedTestCaseId(null);
       return;
     }
 
-    if (!evaluatedTestCases.some((entry) => entry.id === selectedTestCaseId)) {
-      setSelectedTestCaseId(evaluatedTestCases[0].id);
+    if (!visibleTestCases.some((entry) => entry.id === selectedTestCaseId)) {
+      setSelectedTestCaseId(visibleTestCases[0].id);
     }
-  }, [evaluatedTestCases, selectedTestCaseId]);
+  }, [visibleTestCases, selectedTestCaseId]);
 
   useEffect(() => {
     if (!isResizing) {
@@ -406,6 +495,10 @@ const ChallengeRunner = () => {
   }, [isResizing, isEmbeddedMode]);
 
   const fileName = useMemo(() => {
+    if (language === 'java') {
+      return 'Main.java';
+    }
+
     const extension = languageMap[language]?.extension || 'txt';
     return `main.${extension}`;
   }, [language]);
@@ -455,6 +548,24 @@ const ChallengeRunner = () => {
     });
   };
 
+  const setCurrentQuestionPassState = (didPass) => {
+    if (!problems.length) {
+      return;
+    }
+
+    setPassedQuestionIndexes((prev) => {
+      const next = new Set(prev);
+
+      if (didPass) {
+        next.add(selectedProblemIndex);
+      } else {
+        next.delete(selectedProblemIndex);
+      }
+
+      return Array.from(next).sort((left, right) => left - right);
+    });
+  };
+
   const jumpToQuestion = (index) => {
     if (!problems.length) {
       return;
@@ -490,6 +601,7 @@ const ChallengeRunner = () => {
       setSelectedTestCaseId(null);
       setTestPanelView('testcase');
       setAttemptedQuestionIndexes([]);
+      setPassedQuestionIndexes([]);
       setCompileState('idle');
       setCompileErrorDetails('');
       setUseCustomInput(false);
@@ -504,6 +616,7 @@ const ChallengeRunner = () => {
       setChallengeData(null);
       setCodeByQuestionLanguage({});
       setAttemptedQuestionIndexes([]);
+      setPassedQuestionIndexes([]);
       toast.error(message, { id: `${toastIds.challengeLoadFailed}-${challengeId || 'unknown'}` });
     }
   };
@@ -514,7 +627,6 @@ const ChallengeRunner = () => {
     }
 
     loadChallenge(initialChallengeId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialChallengeId]);
 
   const runCustomCode = async () => {
@@ -573,32 +685,80 @@ const ChallengeRunner = () => {
     }
   };
 
-  const runAgainstAllTestCases = async () => {
+  const runAgainstTestCases = async (cases = []) => {
+    const selectedCases = Array.isArray(cases) ? cases : [];
+
+    if (selectedCases.length === 0) {
+      return [];
+    }
+
     const response = await compilerAPI.runCode({
       language,
       fileName,
       code: activeCode,
-      stdin: testCases.map((item) => item.input)
+      stdin: selectedCases.map((item) => item.input)
     });
 
     const rows = normalizeBatchResponse(response.data);
-    return testCases.map((testCase, index) => buildCaseResult({
+    const initialResults = selectedCases.map((testCase, index) => buildCaseResult({
       testCase,
       execution: rows[index] || {},
       ignoreCase
     }));
+
+    const retryEntries = initialResults
+      .map((result, index) => ({
+        index,
+        testCase: selectedCases[index],
+        result
+      }))
+      .filter((entry) => shouldRetryTokenizedInputFormat({
+        language,
+        testCase: entry.testCase,
+        result: entry.result
+      }));
+
+    if (retryEntries.length === 0) {
+      return initialResults;
+    }
+
+    const retryResponse = await compilerAPI.runCode({
+      language,
+      fileName,
+      code: activeCode,
+      stdin: retryEntries.map((entry) => normalizeTokenizedInputForRetry(entry.testCase.input))
+    });
+
+    const retryRows = normalizeBatchResponse(retryResponse.data);
+    const mergedResults = [...initialResults];
+
+    retryEntries.forEach((entry, retryIndex) => {
+      const retriedResult = buildCaseResult({
+        testCase: entry.testCase,
+        execution: retryRows[retryIndex] || {},
+        ignoreCase
+      });
+
+      if (!retriedResult.stderr) {
+        mergedResults[entry.index] = retriedResult;
+      }
+    });
+
+    return mergedResults;
   };
 
   const runCompileCheck = async () => {
     if (testCases.length === 0) {
       setCompileState('failed');
       setCompileErrorDetails('No test cases found for this question');
+      setHasSubmissionRun(false);
       return;
     }
 
     if (!activeCode.trim()) {
       setCompileState('failed');
       setCompileErrorDetails('Code is required');
+      setHasSubmissionRun(false);
       return;
     }
 
@@ -607,8 +767,9 @@ const ChallengeRunner = () => {
       setTestCaseError('');
       setCompileState('idle');
       setCompileErrorDetails('');
+      setHasSubmissionRun(false);
 
-      const mappedResults = await runAgainstAllTestCases();
+      const mappedResults = await runAgainstTestCases(compilePreviewTestCases);
 
       const errorEntry = mappedResults.find((entry) => entry.stderr);
       if (errorEntry) {
@@ -616,6 +777,7 @@ const ChallengeRunner = () => {
         setCompileErrorDetails(errorEntry.stderr || 'Compilation failed');
         setTestCaseResults([]);
         setTestCaseError('Compilation failed. Fix errors before viewing testcase results.');
+        setHasSubmissionRun(false);
         toast.error('Compilation failed');
       } else {
         setCompileState('success');
@@ -624,15 +786,12 @@ const ChallengeRunner = () => {
         setTestCaseResults(mappedResults);
         setTestPanelView('result');
 
-        const consideredResults = sampleCase
-          ? mappedResults.filter((entry) => entry.testCase.id !== sampleCase.id)
-          : mappedResults;
-        const passed = consideredResults.filter((entry) => entry.passed).length;
+        const failedPreviewCount = mappedResults.filter((entry) => !entry.passed).length;
 
-        if (consideredResults.length === 0 || passed === consideredResults.length) {
-          toast.success('Compiled. All test cases passed.', { id: toastIds.compileVerdict });
+        if (failedPreviewCount === 0) {
+          toast.success('Compiled. Example test cases passed.', { id: toastIds.compileVerdict });
         } else {
-          toast.error('Compiled, but some test cases failed.', { id: toastIds.compileVerdict });
+          toast.error('Compiled, but example test cases failed.', { id: toastIds.compileVerdict });
         }
       }
 
@@ -642,6 +801,7 @@ const ChallengeRunner = () => {
       setCompileState('failed');
       setCompileErrorDetails(message);
       setTestCaseResults([]);
+      setHasSubmissionRun(false);
       toast.error(message);
     } finally {
       setRunningCompile(false);
@@ -649,13 +809,12 @@ const ChallengeRunner = () => {
   };
 
   const runCompileAndTest = async () => {
-    markCurrentQuestionAttempted();
-
     if (useCustomInput) {
       setCompileState('idle');
       setCompileErrorDetails('');
       setTestCaseError('');
       setTestCaseResults([]);
+      setHasSubmissionRun(false);
       await runCustomCode();
       return;
     }
@@ -664,8 +823,6 @@ const ChallengeRunner = () => {
   };
 
   const runAllTestCases = async () => {
-    markCurrentQuestionAttempted();
-
     if (compileState !== 'success') {
       setTestPanelView('testcase');
       toast.error('Compile code first to unlock testcases');
@@ -684,10 +841,12 @@ const ChallengeRunner = () => {
     }
 
     try {
+      markCurrentQuestionAttempted();
       setRunningTestCases(true);
       setTestCaseError('');
+      setHasSubmissionRun(false);
 
-      const mappedResults = await runAgainstAllTestCases();
+      const mappedResults = await runAgainstTestCases(testCases);
 
       const errorEntry = mappedResults.find((entry) => entry.stderr);
       if (errorEntry) {
@@ -695,6 +854,8 @@ const ChallengeRunner = () => {
         setCompileErrorDetails(errorEntry.stderr || 'Compilation failed');
         setTestCaseResults([]);
         setTestCaseError('Compilation failed. Fix errors before viewing testcase results.');
+        setCurrentQuestionPassState(false);
+        setHasSubmissionRun(false);
         toast.error('Compilation failed');
         smoothScrollTo(submissionResultRef);
         return;
@@ -705,11 +866,12 @@ const ChallengeRunner = () => {
 
       setTestCaseResults(mappedResults);
       setTestPanelView('result');
-      const consideredResults = sampleCase
-        ? mappedResults.filter((entry) => entry.testCase.id !== sampleCase.id)
-        : mappedResults;
-      const passed = consideredResults.filter((entry) => entry.passed).length;
-      if (consideredResults.length === 0 || passed === consideredResults.length) {
+      setHasSubmissionRun(true);
+      const questionPassed = mappedResults.length > 0 && mappedResults.every((entry) => entry.passed);
+
+      setCurrentQuestionPassState(questionPassed);
+
+      if (questionPassed) {
         toast.success('Accepted', { id: toastIds.submitVerdict });
       } else {
         toast.error('Wrong Answer', { id: toastIds.submitVerdict });
@@ -719,6 +881,8 @@ const ChallengeRunner = () => {
       const message = error.response?.data?.error || 'Failed to run test cases';
       setTestCaseError(message);
       setTestCaseResults([]);
+      setCurrentQuestionPassState(false);
+      setHasSubmissionRun(false);
       toast.error(message);
     } finally {
       setRunningTestCases(false);
@@ -782,11 +946,19 @@ const ChallengeRunner = () => {
                   </article>
 
                   <article className="runner-case-card pending mt-3">
-                    <p className="runner-field-label mt-0">Sample Input</p>
-                    <pre className="compiler-inline-code runner-field-block">{sampleCase?.input || '(not available)'}</pre>
+                    {exampleTestCases.length > 0 ? (
+                      exampleTestCases.map((exampleCase, index) => (
+                        <div key={`example-${exampleCase.id}-${index}`} className={index > 0 ? 'mt-4' : ''}>
+                          <p className="runner-field-label mt-0">Example Input {index + 1}</p>
+                          <pre className="compiler-inline-code runner-field-block">{exampleCase.input || '(empty)'}</pre>
 
-                    <p className="runner-field-label">Sample Output</p>
-                    <pre className="compiler-inline-code runner-field-block expected">{sampleCase?.output || '(not available)'}</pre>
+                          <p className="runner-field-label">Example Output {index + 1}</p>
+                          <pre className="compiler-inline-code runner-field-block expected">{exampleCase.output || '(empty)'}</pre>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-slate-500">No example testcases available.</p>
+                    )}
                   </article>
 
                 </>
@@ -1073,7 +1245,7 @@ const ChallengeRunner = () => {
                     type="button"
                     className={`runner-lc-head-tab ${testPanelView === 'result' ? 'active' : ''}`}
                     onClick={() => setTestPanelView('result')}
-                    disabled={!isTestPanelUnlocked || !hasSubmitted}
+                    disabled={!isTestPanelUnlocked || !hasAnyTestCaseResult}
                   >
                     Test Result
                   </button>
@@ -1082,9 +1254,9 @@ const ChallengeRunner = () => {
                 {isTestPanelUnlocked && (
                   <>
                     <div className="runner-lc-case-tabs">
-                      {evaluatedTestCases.length > 0 ? (
+                      {visibleTestCases.length > 0 ? (
                         <>
-                          {evaluatedTestCases.map((testCase, index) => {
+                          {visibleTestCases.map((testCase, index) => {
                             const caseResult = resultByCaseId.get(testCase.id);
                             const caseStatus = caseResult ? (caseResult.passed ? 'pass' : 'fail') : 'pending';
 
@@ -1103,65 +1275,94 @@ const ChallengeRunner = () => {
                           })}
                         </>
                       ) : (
-                        <p className="runner-lc-empty">Sample testcase is shown above. No hidden testcase found.</p>
+                        <p className="runner-lc-empty">No testcase found for this question.</p>
                       )}
                     </div>
 
                     {testCaseError && <Alert className="mb-2">{testCaseError}</Alert>}
 
-                    {hasSubmitted && (
-                      <p className={`runner-lc-overall-line ${allPassed ? 'pass' : 'fail'}`}>
-                        {allPassed
-                          ? 'Accepted. All test cases passed.'
-                          : `Wrong Answer. ${failCount} test case${failCount === 1 ? '' : 's'} failed.`}
-                      </p>
+                    {hasAnyTestCaseResult && (
+                      hasSubmitted ? (
+                        <>
+                          <p className={`runner-lc-overall-line ${allPassed ? 'pass' : 'fail'}`}>
+                            {allPassed
+                              ? 'Accepted. All test cases passed.'
+                              : `Wrong Answer. ${failCount} test case${failCount === 1 ? '' : 's'} failed.`}
+                          </p>
+                          <p className="runner-lc-overall-line">
+                            Checked: {testCaseResults.length} • Passed: {passCount} • Failed: {failCount}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="runner-lc-overall-line">
+                          Compile/Test preview completed for example testcases.
+                        </p>
+                      )
                     )}
 
                     {testPanelView === 'testcase' ? (
                       selectedTestCase ? (
                         <div className="runner-lc-result-body">
+                          {hasSubmitted ? (
+                            <>
+                              {selectedTestCaseResult && (
+                                <p className={`runner-lc-result-state ${selectedTestCaseResult.passed ? 'pass' : 'fail'}`}>
+                                  {selectedTestCaseResult.passed ? 'Accepted' : 'Failed'}
+                                  {' '}• Runtime {Math.round(parseExecutionMs(selectedTestCaseResult.executionTime))} ms
+                                </p>
+                              )}
+                              <p className="runner-lc-empty">Input and output are hidden after submission.</p>
+                            </>
+                          ) : (
+                            <div className="runner-lc-result-grid">
+                              <article className="runner-lc-field">
+                                <p>expected output =</p>
+                                <pre className="compiler-inline-code">{selectedTestCase.output || '(empty)'}</pre>
+                              </article>
+
+                              <article className="runner-lc-field">
+                                <p>your output =</p>
+                                <pre className="compiler-inline-code">
+                                  {selectedTestCaseResult
+                                    ? (selectedTestCaseResult.stderr || selectedTestCaseResult.stdout || '(empty)')
+                                    : '(run code to see output)'}
+                                </pre>
+                              </article>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="runner-lc-empty">Run Compile and Test to see testcase output.</p>
+                      )
+                    ) : selectedTestCaseResult ? (
+                      <div className="runner-lc-result-body">
+                        <p className={`runner-lc-result-state ${selectedTestCaseResult.passed ? 'pass' : 'fail'}`}>
+                          {hasSubmitted
+                            ? (selectedTestCaseResult.passed ? 'Accepted' : 'Failed')
+                            : (selectedTestCaseResult.passed ? 'Preview Passed' : 'Preview Failed')}
+                          {' '}• Runtime {Math.round(parseExecutionMs(selectedTestCaseResult.executionTime))} ms
+                        </p>
+
+                        {hasSubmitted ? (
+                          <p className="runner-lc-empty">Input and output are hidden after submission.</p>
+                        ) : (
                           <div className="runner-lc-result-grid">
                             <article className="runner-lc-field">
                               <p>expected output =</p>
-                              <pre className="compiler-inline-code">{selectedTestCase.output || '(empty)'}</pre>
+                              <pre className="compiler-inline-code">{selectedTestCaseResult.expected || '(empty)'}</pre>
                             </article>
 
                             <article className="runner-lc-field">
                               <p>your output =</p>
                               <pre className="compiler-inline-code">
-                                {selectedTestCaseResult
-                                  ? (selectedTestCaseResult.stderr || selectedTestCaseResult.stdout || '(empty)')
-                                  : '(run code to see output)'}
+                                {selectedTestCaseResult.stderr || selectedTestCaseResult.stdout || '(empty)'}
                               </pre>
                             </article>
                           </div>
-                        </div>
-                      ) : (
-                        <p className="runner-lc-empty">Sample testcase is shown in question. Hidden testcase details appear here.</p>
-                      )
-                    ) : hasSubmitted && selectedTestCaseResult ? (
-                      <div className="runner-lc-result-body">
-                        <p className={`runner-lc-result-state ${selectedTestCaseResult.passed ? 'pass' : 'fail'}`}>
-                          {selectedTestCaseResult.passed ? 'Accepted' : 'Failed'}
-                          {' '}• Runtime {Math.round(parseExecutionMs(selectedTestCaseResult.executionTime))} ms
-                        </p>
-
-                        <div className="runner-lc-result-grid">
-                          <article className="runner-lc-field">
-                            <p>expected output =</p>
-                            <pre className="compiler-inline-code">{selectedTestCaseResult.expected || '(empty)'}</pre>
-                          </article>
-
-                          <article className="runner-lc-field">
-                            <p>your output =</p>
-                            <pre className="compiler-inline-code">
-                              {selectedTestCaseResult.stderr || selectedTestCaseResult.stdout || '(empty)'}
-                            </pre>
-                          </article>
-                        </div>
+                        )}
                       </div>
                     ) : (
-                      <p className="runner-lc-empty">Run Submit Code to see test result.</p>
+                      <p className="runner-lc-empty">Run Compile and Test to see preview result.</p>
                     )}
                   </>
                 )}

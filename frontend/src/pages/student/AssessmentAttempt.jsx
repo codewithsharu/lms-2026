@@ -8,6 +8,8 @@ import Modal from '../../components/ui/Modal';
 import { assessmentAPI, compilerAPI } from '../../services/api';
 import { getExamSessionToken } from '../../utils/examSession';
 
+const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
+
 const formatTimer = (seconds) => {
   const safe = Math.max(0, Number(seconds || 0));
   const mm = String(Math.floor(safe / 60)).padStart(2, '0');
@@ -110,6 +112,20 @@ const normalizeAttemptedQuestionIndexes = (value) => {
     )
   ).sort((left, right) => left - right);
 };
+
+const normalizeQuestionScores = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => Number(entry))
+    .map((entry) => (Number.isFinite(entry) && entry > 0 ? Number(entry.toFixed(2)) : 1));
+};
+
+const sumQuestionScores = (scores = []) => Number(
+  (scores || []).reduce((sum, score) => sum + Number(score || 0), 0).toFixed(2)
+);
 
 const getCodingSubmissionAttemptedCount = (submission) => {
   if (!submission || typeof submission !== 'object') {
@@ -327,6 +343,8 @@ const AssessmentAttempt = () => {
     };
   }, [location.pathname, location.search]);
 
+  const shouldAutoTakeoverOnConflict = Boolean(location.state?.autoTakeoverOnConflict);
+
   const isPreviewMode = previewConfig.enabled;
 
   const [loading, setLoading] = useState(true);
@@ -358,9 +376,12 @@ const AssessmentAttempt = () => {
   const hasAutoSubmittedRef = useRef(false);
   const sessionTokenRef = useRef(getExamSessionToken());
   const skipNextAutosaveRef = useRef(true);
+  const exitAutoSubmitTriggeredRef = useRef(false);
   const hasBootstrapAttemptRef = useRef(false);
   const codingFrameRef = useRef(null);
   const codingFramePollingRef = useRef(null);
+  const loadAttemptRef = useRef(null);
+  const handleSubmitRef = useRef(null);
 
   const buildAutosavePayload = (
     questionList,
@@ -485,6 +506,11 @@ const AssessmentAttempt = () => {
       }
     } catch (error) {
       if (error.response?.status === 409 && error.response?.data?.sessionConflict) {
+        if (shouldAutoTakeoverOnConflict && !forceTakeover) {
+          await loadAttempt({ forceTakeover: true, silent });
+          return;
+        }
+
         setShowSubmitModal(false);
         setSessionConflict({
           message: error.response?.data?.error || 'This attempt is active in another session.',
@@ -507,6 +533,8 @@ const AssessmentAttempt = () => {
       }
     }
   };
+
+  loadAttemptRef.current = loadAttempt;
 
   useEffect(() => {
     document.documentElement.classList.add('exam-page-scrollbar-hidden');
@@ -581,12 +609,12 @@ const AssessmentAttempt = () => {
       if (hydrateAttemptState(bootstrapPayload)) {
         hasBootstrapAttemptRef.current = true;
         setLoading(false);
-        loadAttempt({ silent: true });
+        loadAttemptRef.current?.({ silent: true });
         return;
       }
 
       hasBootstrapAttemptRef.current = false;
-      loadAttempt();
+      loadAttemptRef.current?.();
     };
 
     initializeAttempt();
@@ -595,6 +623,10 @@ const AssessmentAttempt = () => {
       cancelled = true;
     };
   }, [attemptId, isPreviewMode, previewConfig, location.state]);
+
+  useEffect(() => {
+    exitAutoSubmitTriggeredRef.current = false;
+  }, [attemptData?.attempt?.id]);
 
   useEffect(() => {
     if (isPreviewMode) {
@@ -636,15 +668,96 @@ const AssessmentAttempt = () => {
     if (isPreviewMode) return;
     if (!attemptData || submittedSummary) return;
 
+    const shouldAutoSubmitOnExit = (
+      attemptData?.attempt?.status === 'in_progress' &&
+      attemptData?.hostedAssessment?.allow_resume === false
+    );
+    const currentAttemptId = attemptData?.attempt?.id;
+
+    const triggerExitAutoSubmit = () => {
+      if (!shouldAutoSubmitOnExit || !currentAttemptId || exitAutoSubmitTriggeredRef.current) {
+        return;
+      }
+
+      exitAutoSubmitTriggeredRef.current = true;
+
+      const endpoint = `${API_URL}/assessments/student/attempts/${encodeURIComponent(currentAttemptId)}/submit`;
+      const payload = {
+        answers: buildAutosavePayload(
+          questions,
+          answers,
+          savedResponses,
+          markedForReview,
+          currentSection,
+          sectionCompletionOrder,
+          codingSubmissions
+        ),
+        forceAutoSubmit: true,
+        sessionToken: sessionTokenRef.current
+      };
+
+      try {
+        const request = fetch(endpoint, {
+          method: 'POST',
+          credentials: 'include',
+          keepalive: true,
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (request && typeof request.catch === 'function') {
+          request.catch(() => {});
+        }
+      } catch {
+        // Best-effort exit submit should not block browser navigation.
+      }
+
+      try {
+        if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+          const beaconPayload = new URLSearchParams({
+            forceAutoSubmit: 'true',
+            sessionToken: sessionTokenRef.current || ''
+          });
+
+          navigator.sendBeacon(endpoint, beaconPayload);
+        }
+      } catch {
+        // Ignore beacon errors; submit is also attempted via keepalive fetch.
+      }
+    };
+
     const onBeforeUnload = (event) => {
+      triggerExitAutoSubmit();
       event.preventDefault();
       event.returnValue = '';
       return '';
     };
 
+    const onPageHide = () => {
+      triggerExitAutoSubmit();
+    };
+
     window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [attemptData, submittedSummary, isPreviewMode]);
+    window.addEventListener('pagehide', onPageHide);
+
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [
+    attemptData,
+    submittedSummary,
+    isPreviewMode,
+    questions,
+    answers,
+    savedResponses,
+    markedForReview,
+    currentSection,
+    sectionCompletionOrder,
+    codingSubmissions
+  ]);
 
   useEffect(() => {
     if (!attemptData || submittedSummary) return;
@@ -652,7 +765,7 @@ const AssessmentAttempt = () => {
     if (timeLeft <= 0) {
       if (!hasAutoSubmittedRef.current) {
         hasAutoSubmittedRef.current = true;
-        handleSubmit(true);
+        handleSubmitRef.current?.(true);
       }
       return;
     }
@@ -896,6 +1009,13 @@ const AssessmentAttempt = () => {
         toNonNegativeInteger(payload.attemptedQuestionCount, 0)
       );
       const incomingTotal = toNonNegativeInteger(payload.totalQuestionCount, 0);
+      const incomingQuestionScores = normalizeQuestionScores(payload.questionScores);
+      const incomingTotalPossibleScore = Number(payload.totalPossibleScore);
+      const incomingPassedIndexesRaw = normalizeAttemptedQuestionIndexes(payload.passedQuestionIndexes);
+      const incomingPassedCountRaw = Math.max(
+        incomingPassedIndexesRaw.length,
+        toNonNegativeInteger(payload.passedQuestionCount, 0)
+      );
 
       setCodingSubmissions((prev) => {
         const previousState = prev && typeof prev === 'object' ? prev : {};
@@ -914,6 +1034,30 @@ const AssessmentAttempt = () => {
           incomingTotal
         );
 
+        const resolvedQuestionScores = incomingQuestionScores.length > 0
+          ? incomingQuestionScores
+          : normalizeQuestionScores(previousEntry.questionScores);
+
+        let resolvedPassedIndexes = incomingPassedIndexesRaw;
+        if (payload.allTestCasesPassed && resolvedQuestionScores.length > 0) {
+          resolvedPassedIndexes = resolvedQuestionScores.map((_, index) => index);
+        }
+
+        if (resolvedPassedIndexes.length === 0 && incomingPassedCountRaw > 0 && resolvedQuestionScores.length > 0) {
+          resolvedPassedIndexes = Array.from({ length: Math.min(incomingPassedCountRaw, resolvedQuestionScores.length) }, (_, index) => index);
+        }
+
+        const resolvedPassedCount = Math.max(
+          resolvedPassedIndexes.length,
+          incomingPassedCountRaw
+        );
+
+        const resolvedTotalPossibleScore = Number.isFinite(incomingTotalPossibleScore) && incomingTotalPossibleScore > 0
+          ? Number(incomingTotalPossibleScore.toFixed(2))
+          : (resolvedQuestionScores.length > 0
+            ? sumQuestionScores(resolvedQuestionScores)
+            : Number(previousEntry.totalPossibleScore || 0));
+
         return {
           ...previousState,
           [challengeId]: {
@@ -922,6 +1066,14 @@ const AssessmentAttempt = () => {
             attemptedQuestionIndexes: mergedIndexes,
             attemptedQuestionCount: mergedAttempted,
             totalQuestionCount: mergedTotal,
+            passedQuestionIndexes: resolvedPassedIndexes,
+            passedQuestionCount: resolvedPassedCount,
+            allTestCasesPassed: Boolean(
+              payload.allTestCasesPassed
+              || (resolvedQuestionScores.length > 0 && resolvedPassedIndexes.length === resolvedQuestionScores.length)
+            ),
+            questionScores: resolvedQuestionScores,
+            totalPossibleScore: resolvedTotalPossibleScore,
             updatedAt: new Date().toISOString()
           }
         };
@@ -1093,6 +1245,8 @@ const AssessmentAttempt = () => {
       setSubmitting(false);
     }
   };
+
+  handleSubmitRef.current = handleSubmit;
 
   const moveToCodingSection = async () => {
     if (!attemptData?.attempt?.id || !hasCodingSection || switchingToCoding) return;
@@ -1277,7 +1431,39 @@ const AssessmentAttempt = () => {
     );
   }
 
-  if (!attemptData) return null;
+  if (!attemptData) {
+    if (sessionConflict) {
+      return (
+        <div className="min-h-screen bg-slate-100 px-4 py-8">
+          <Card className="mx-auto max-w-2xl">
+            <Card.Header>
+              <h2 className="section-title">Resume Here Safely</h2>
+            </Card.Header>
+            <Card.Body className="space-y-4">
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                {sessionConflict.message || 'This attempt is active in another browser session.'}
+              </div>
+              <p className="text-sm text-slate-600">
+                To prevent conflicts, only one browser session can save answers at a time.
+                Continue here to safely move this attempt to your current browser.
+              </p>
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button variant="secondary" onClick={() => navigate('/student/assessments')}>
+                  Back to Assessments
+                </Button>
+                <Button onClick={handleSessionTakeover} disabled={resumingHere}>
+                  <FiLock className="h-4 w-4" />
+                  {resumingHere ? 'Resuming Here...' : 'Resume Here & Logout Other Session'}
+                </Button>
+              </div>
+            </Card.Body>
+          </Card>
+        </div>
+      );
+    }
+
+    return null;
+  }
 
   if (submittedSummary) {
     return (

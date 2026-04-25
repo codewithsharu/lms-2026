@@ -32,6 +32,82 @@ const EXAM_SESSION_HEADER = 'x-exam-session-token';
 const EXAM_SESSION_META_KEY = '__sessionMeta';
 const ATTEMPT_SECTION_META_KEY = '__sectionMeta';
 const CODING_SUBMISSIONS_META_KEY = '__codingSubmissions';
+const ONECOMPILER_API_BASE = 'https://api.onecompiler.com';
+const ONECOMPILER_TIMEOUT_MS = Number.parseInt(process.env.ONECOMPILER_TIMEOUT_MS || '25000', 10);
+
+const getOneCompilerApiKey = () => {
+  const candidates = [
+    process.env.ONECOMPILER_API_KEY,
+    process.env.ONE_COMPILER_API_KEY,
+    process.env.ONECOMPILER_ACCESS_TOKEN,
+    process.env.ONECOMPILER_KEY
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  return '';
+};
+
+const readJsonOrText = async (response) => {
+  const text = await response.text();
+
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+};
+
+const callOneCompiler = async ({ url, method = 'GET', headers = {}, body }) => {
+  const controller = new AbortController();
+  const timeoutMs = Number.isFinite(ONECOMPILER_TIMEOUT_MS) ? ONECOMPILER_TIMEOUT_MS : 25000;
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body,
+      signal: controller.signal
+    });
+
+    const payload = await readJsonOrText(response);
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      payload
+    };
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+};
+
+const normalizeIndexList = (rawValue) => {
+  if (!Array.isArray(rawValue)) {
+    return [];
+  }
+
+  return Array.from(new Set(
+    rawValue
+      .map((entry) => safeInt(entry, -1))
+      .filter((entry) => Number.isFinite(entry) && entry >= 0)
+  )).sort((left, right) => left - right);
+};
+
+const normalizePositiveMarks = (value, fallback = 1) => {
+  const parsed = safeNumber(value, fallback);
+  const safe = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  return Number(safe.toFixed(2));
+};
 
 const safeInt = (value, fallback) => {
   const parsed = Number.parseInt(value, 10);
@@ -479,7 +555,8 @@ const normalizeQuestionList = (templateData) => {
           type: 'blank',
           question,
           options: ['', '', '', ''],
-          blankAnswer
+          blankAnswer,
+          marks: normalizePositiveMarks(item?.marks ?? item?.score ?? item?.points, 1)
         };
       }
 
@@ -502,7 +579,8 @@ const normalizeQuestionList = (templateData) => {
         question,
         options,
         answerMode: item?.answerMode === 'multiple' || correctOptions.length > 1 ? 'multiple' : 'single',
-        correctOptions
+        correctOptions,
+        marks: normalizePositiveMarks(item?.marks ?? item?.score ?? item?.points, 1)
       };
     })
     .filter(Boolean);
@@ -594,36 +672,374 @@ const isAnswerCorrect = (question, normalizedAnswer) => {
   return Number(normalizedAnswer) === Number(question.correctOptions[0]);
 };
 
+const roundToTwo = (value) => Number(safeNumber(value, 0).toFixed(2));
+
+const normalizeQuestionScoreList = (rawValue) => {
+  if (!Array.isArray(rawValue)) {
+    return [];
+  }
+
+  return rawValue
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isFinite(entry) && entry > 0)
+    .map((entry) => Number(entry.toFixed(2)));
+};
+
+const sumScoreList = (scores = []) => roundToTwo(
+  scores.reduce((sum, score) => sum + safeNumber(score, 0), 0)
+);
+
+const getCodingSubmissionMap = (answers) => {
+  if (!answers || typeof answers !== 'object') {
+    return {};
+  }
+
+  const submissions = answers[CODING_SUBMISSIONS_META_KEY];
+  if (!submissions || typeof submissions !== 'object' || Array.isArray(submissions)) {
+    return {};
+  }
+
+  return Object.entries(submissions).reduce((accumulator, [challengeId, entry]) => {
+    const normalizedChallengeId = String(challengeId || '').trim();
+
+    if (!normalizedChallengeId || !entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return accumulator;
+    }
+
+    accumulator[normalizedChallengeId] = entry;
+    return accumulator;
+  }, {});
+};
+
+const normalizeChallengeProblemList = (payload) => {
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+
+  if (Array.isArray(payload.problems)) {
+    return payload.problems;
+  }
+
+  if (Array.isArray(payload.challenge?.problems)) {
+    return payload.challenge.problems;
+  }
+
+  return [];
+};
+
+const extractChallengeScoreProfile = (payload) => {
+  const problems = normalizeChallengeProblemList(payload);
+  const questionScores = problems.map((problem) => (
+    normalizePositiveMarks(problem?.properties?.score ?? problem?.score ?? problem?.points, 1)
+  ));
+
+  return {
+    questionScores,
+    totalPossibleScore: sumScoreList(questionScores),
+    questionCount: questionScores.length
+  };
+};
+
+const fetchChallengeScoreProfile = async (challengeId, apiKey) => {
+  if (!challengeId || !apiKey) {
+    return null;
+  }
+
+  try {
+    const upstream = await callOneCompiler({
+      url: `${ONECOMPILER_API_BASE}/v1/challenges/${encodeURIComponent(challengeId)}?access_token=${encodeURIComponent(apiKey)}`
+    });
+
+    if (!upstream.ok) {
+      return null;
+    }
+
+    return extractChallengeScoreProfile(upstream.payload);
+  } catch {
+    return null;
+  }
+};
+
+const calculateCodingChallengeSummary = (submission, fallbackProfile) => {
+  const safeSubmission = submission && typeof submission === 'object' && !Array.isArray(submission)
+    ? submission
+    : {};
+  const fallbackScores = normalizeQuestionScoreList(fallbackProfile?.questionScores);
+  const submissionScores = normalizeQuestionScoreList(safeSubmission.questionScores);
+  const resolvedQuestionScores = submissionScores.length > 0 ? submissionScores : fallbackScores;
+
+  const submissionTotalPossibleScore = safeNumber(safeSubmission.totalPossibleScore, 0);
+  const fallbackTotalPossibleScore = safeNumber(fallbackProfile?.totalPossibleScore, 0);
+  let totalPossibleScore = 0;
+
+  if (submissionTotalPossibleScore > 0) {
+    totalPossibleScore = roundToTwo(submissionTotalPossibleScore);
+  } else if (fallbackTotalPossibleScore > 0) {
+    totalPossibleScore = roundToTwo(fallbackTotalPossibleScore);
+  } else if (resolvedQuestionScores.length > 0) {
+    totalPossibleScore = sumScoreList(resolvedQuestionScores);
+  }
+
+  let passedQuestionIndexes = normalizeIndexList(safeSubmission.passedQuestionIndexes);
+  const allTestCasesPassedFlag = parseBooleanInput(safeSubmission.allTestCasesPassed, false);
+
+  if (allTestCasesPassedFlag && resolvedQuestionScores.length > 0) {
+    passedQuestionIndexes = Array.from({ length: resolvedQuestionScores.length }, (_, index) => index);
+  }
+
+  const hintedPassedCount = Math.max(
+    passedQuestionIndexes.length,
+    safeInt(safeSubmission.passedQuestionCount, 0)
+  );
+
+  if (passedQuestionIndexes.length === 0 && hintedPassedCount > 0 && resolvedQuestionScores.length > 0) {
+    const inferredCount = Math.min(hintedPassedCount, resolvedQuestionScores.length);
+    passedQuestionIndexes = Array.from({ length: inferredCount }, (_, index) => index);
+  }
+
+  if (resolvedQuestionScores.length > 0) {
+    passedQuestionIndexes = passedQuestionIndexes.filter((index) => index < resolvedQuestionScores.length);
+  }
+
+  const hintedQuestionCount = Math.max(
+    resolvedQuestionScores.length,
+    safeInt(safeSubmission.totalQuestionCount, 0)
+  );
+  const totalQuestionCount = hintedQuestionCount;
+
+  let passedQuestionCount = Math.max(passedQuestionIndexes.length, hintedPassedCount);
+  if (allTestCasesPassedFlag && totalQuestionCount > 0) {
+    passedQuestionCount = totalQuestionCount;
+  }
+  if (totalQuestionCount > 0) {
+    passedQuestionCount = Math.min(totalQuestionCount, passedQuestionCount);
+  }
+
+  const allTestCasesPassed = totalQuestionCount > 0
+    ? (allTestCasesPassedFlag || passedQuestionCount >= totalQuestionCount)
+    : allTestCasesPassedFlag;
+
+  let score = 0;
+
+  if (resolvedQuestionScores.length > 0 && passedQuestionIndexes.length > 0) {
+    score = roundToTwo(
+      passedQuestionIndexes.reduce((sum, index) => sum + safeNumber(resolvedQuestionScores[index], 0), 0)
+    );
+  } else if (allTestCasesPassed && totalPossibleScore > 0) {
+    score = totalPossibleScore;
+  }
+
+  if (totalPossibleScore <= 0 && resolvedQuestionScores.length > 0) {
+    totalPossibleScore = sumScoreList(resolvedQuestionScores);
+  }
+
+  if (totalPossibleScore <= 0 && score > 0) {
+    totalPossibleScore = score;
+  }
+
+  if (totalPossibleScore > 0) {
+    score = Math.min(score, totalPossibleScore);
+  }
+
+  return {
+    score: roundToTwo(score),
+    totalPossibleScore: roundToTwo(totalPossibleScore),
+    passedQuestionCount,
+    totalQuestionCount,
+    allTestCasesPassed,
+    questionScores: resolvedQuestionScores
+  };
+};
+
+const calculateCodingSummary = async ({ codingSection, rawAnswers }) => {
+  const normalizedCodingSection = normalizeCodingSection(codingSection);
+
+  if (!normalizedCodingSection) {
+    return {
+      score: 0,
+      totalMarks: 0,
+      passedQuestionCount: 0,
+      totalQuestionCount: 0,
+      challengeBreakdown: {}
+    };
+  }
+
+  const submissions = getCodingSubmissionMap(rawAnswers);
+  const challengeIds = normalizedCodingSection.challenge_ids;
+  const apiKey = getOneCompilerApiKey();
+
+  const challengeEntries = await Promise.all(
+    challengeIds.map(async (challengeId) => {
+      const submission = submissions[challengeId] && typeof submissions[challengeId] === 'object'
+        ? submissions[challengeId]
+        : {};
+      const submissionScores = normalizeQuestionScoreList(submission.questionScores);
+      const shouldFetchFallback = submissionScores.length === 0;
+      const fallbackProfile = shouldFetchFallback ? await fetchChallengeScoreProfile(challengeId, apiKey) : null;
+      const summary = calculateCodingChallengeSummary(submission, fallbackProfile);
+
+      return [challengeId, summary];
+    })
+  );
+
+  const challengeBreakdown = Object.fromEntries(challengeEntries);
+  const score = roundToTwo(
+    challengeEntries.reduce((sum, [, summary]) => sum + safeNumber(summary?.score, 0), 0)
+  );
+  const totalMarks = roundToTwo(
+    challengeEntries.reduce((sum, [, summary]) => sum + safeNumber(summary?.totalPossibleScore, 0), 0)
+  );
+  const passedQuestionCount = challengeEntries.reduce(
+    (sum, [, summary]) => sum + safeInt(summary?.passedQuestionCount, 0),
+    0
+  );
+  const totalQuestionCount = challengeEntries.reduce(
+    (sum, [, summary]) => sum + safeInt(summary?.totalQuestionCount, 0),
+    0
+  );
+
+  return {
+    score,
+    totalMarks,
+    passedQuestionCount,
+    totalQuestionCount,
+    challengeBreakdown
+  };
+};
+
 const calculateAttemptSummary = (questions, rawAnswers, configuredTotalMarks) => {
   const answers = rawAnswers && typeof rawAnswers === 'object' ? rawAnswers : {};
   const totalQuestions = questions.length;
-  const totalMarks = safeNumber(configuredTotalMarks, totalQuestions > 0 ? totalQuestions : 0);
-  const marksPerQuestion = totalQuestions > 0 ? (totalMarks / totalQuestions) : 0;
+  const configuredMarks = safeNumber(configuredTotalMarks, 0);
 
   let correctCount = 0;
+  let score = 0;
+  let questionMarksTotal = 0;
   const normalizedAnswers = {};
 
   questions.forEach((question, index) => {
     const key = String(index);
     const normalized = normalizeSubmittedAnswer(question, answers[key]);
+    const questionMarks = normalizePositiveMarks(question?.marks, 1);
+    questionMarksTotal += questionMarks;
+
     normalizedAnswers[key] = normalized;
 
     if (isAnswerCorrect(question, normalized)) {
       correctCount += 1;
+      score += questionMarks;
     }
   });
 
-  const scoreRaw = correctCount * marksPerQuestion;
-  const score = Number(scoreRaw.toFixed(2));
+  const totalMarks = questionMarksTotal > 0
+    ? questionMarksTotal
+    : (configuredMarks > 0 ? configuredMarks : totalQuestions);
+  score = roundToTwo(score);
   const percentage = totalMarks > 0 ? Number(((score / totalMarks) * 100).toFixed(2)) : 0;
 
   return {
     normalizedAnswers,
     correctCount,
     totalQuestions,
-    totalMarks: Number(totalMarks.toFixed(2)),
+    totalMarks: roundToTwo(totalMarks),
     score,
-    percentage
+    percentage,
+    configuredTotalMarks: roundToTwo(configuredMarks > 0 ? configuredMarks : totalMarks)
+  };
+};
+
+const submitAttemptWithScoring = async ({
+  attempt,
+  incomingAnswers = {},
+  forceAutoSubmit = false
+}) => {
+  const questions = normalizeQuestionList(attempt?.hosted?.template?.template_data);
+
+  if (questions.length === 0) {
+    const configError = new Error('Assessment questions are not configured');
+    configError.statusCode = 400;
+    throw configError;
+  }
+
+  const safeIncomingAnswers = incomingAnswers && typeof incomingAnswers === 'object'
+    ? incomingAnswers
+    : {};
+  const remainingSeconds = getRemainingSeconds(attempt, attempt.hosted);
+  const submittedStatus = (parseBooleanInput(forceAutoSubmit, false) || remainingSeconds <= 0)
+    ? 'auto_submitted'
+    : 'submitted';
+  const mergedAnswers = {
+    ...(attempt.answers && typeof attempt.answers === 'object' ? attempt.answers : {}),
+    ...safeIncomingAnswers
+  };
+
+  const mcqSummary = calculateAttemptSummary(
+    questions,
+    mergedAnswers,
+    attempt.hosted?.template?.total_marks
+  );
+
+  const codingSummary = await calculateCodingSummary({
+    codingSection: attempt.hosted?.coding_section,
+    rawAnswers: mergedAnswers
+  });
+
+  const finalScore = roundToTwo(mcqSummary.score + codingSummary.score);
+  const finalTotalMarks = roundToTwo(mcqSummary.totalMarks + codingSummary.totalMarks);
+  const finalPercentage = finalTotalMarks > 0
+    ? roundToTwo((finalScore / finalTotalMarks) * 100)
+    : 0;
+  const finalCorrectCount = mcqSummary.correctCount + codingSummary.passedQuestionCount;
+  const finalTotalQuestions = mcqSummary.totalQuestions + codingSummary.totalQuestionCount;
+
+  const metadataAnswers = Object.fromEntries(
+    Object.entries(mergedAnswers).filter(([key]) => key.startsWith('__'))
+  );
+  const finalAnswers = {
+    ...mcqSummary.normalizedAnswers,
+    ...metadataAnswers
+  };
+
+  const codingSection = normalizeCodingSection(attempt.hosted?.coding_section);
+  if (codingSection) {
+    const nowIso = new Date().toISOString();
+    const sectionState = getAttemptSectionState(finalAnswers);
+    finalAnswers[ATTEMPT_SECTION_META_KEY] = {
+      currentSection: 'coding',
+      mcqCompletedAt: sectionState.mcqCompletedAt || nowIso,
+      codingEnteredAt: sectionState.codingEnteredAt || nowIso
+    };
+  }
+
+  const { data: updatedAttempt, error: updateError } = await supabase
+    .from('assessment_attempts')
+    .update({
+      status: submittedStatus,
+      answers: finalAnswers,
+      score: finalScore,
+      total_marks: finalTotalMarks,
+      percentage: finalPercentage,
+      correct_count: finalCorrectCount,
+      total_questions: finalTotalQuestions,
+      submitted_at: new Date().toISOString()
+    })
+    .eq('id', attempt.id)
+    .select('*')
+    .single();
+
+  if (updateError) {
+    throw updateError;
+  }
+
+  const resultVisible = (
+    attempt.hosted?.result_mode === 'immediate' ||
+    (attempt.hosted?.result_mode === 'after_end' && attempt.hosted?.end_time && new Date() > new Date(attempt.hosted.end_time))
+  );
+
+  return {
+    updatedAttempt,
+    resultVisible,
+    resultMode: attempt.hosted?.result_mode
   };
 };
 
@@ -1305,6 +1721,87 @@ router.put('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
   }
 });
 
+// Teacher: delete hosted exam and auto-unassign targeted students
+router.delete('/hosted/:id', verifyToken, hasRole('teacher'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: existingHostedExam, error: existingError } = await supabase
+      .from('hosted_assessments')
+      .select('id')
+      .eq('id', id)
+      .eq('host_id', req.user.id)
+      .single();
+
+    if (existingError && isMissingHostedTableError(existingError)) {
+      return res.status(503).json({
+        error: 'Assessment module is not initialized yet. Please run migration when DB access is available.',
+        setupRequired: true
+      });
+    }
+
+    if (existingError || !existingHostedExam) {
+      return res.status(404).json({ error: 'Hosted exam not found for this teacher' });
+    }
+
+    let deletedAttemptCount = 0;
+
+    const { data: removedAttempts, error: attemptDeleteError } = await supabase
+      .from('assessment_attempts')
+      .delete()
+      .eq('hosted_assessment_id', id)
+      .select('id');
+
+    if (attemptDeleteError && !isMissingAttemptTableError(attemptDeleteError)) {
+      throw attemptDeleteError;
+    }
+
+    if (!attemptDeleteError) {
+      deletedAttemptCount = Array.isArray(removedAttempts) ? removedAttempts.length : 0;
+    }
+
+    let unassignedStudentCount = 0;
+
+    const { data: removedTargets, error: targetDeleteError } = await supabase
+      .from('hosted_assessment_student_targets')
+      .delete()
+      .eq('hosted_assessment_id', id)
+      .select('student_id');
+
+    if (targetDeleteError && !isMissingHostedTargetTableError(targetDeleteError)) {
+      throw targetDeleteError;
+    }
+
+    if (!targetDeleteError) {
+      unassignedStudentCount = Array.isArray(removedTargets) ? removedTargets.length : 0;
+    }
+
+    const { data: deletedHostedExam, error: deleteError } = await supabase
+      .from('hosted_assessments')
+      .delete()
+      .eq('id', id)
+      .eq('host_id', req.user.id)
+      .select('id')
+      .single();
+
+    if (deleteError) throw deleteError;
+
+    if (!deletedHostedExam) {
+      return res.status(404).json({ error: 'Hosted exam not found for this teacher' });
+    }
+
+    return res.json({
+      message: 'Scheduled exam deleted successfully. Assigned students and submission records were removed.',
+      hostedExamId: id,
+      unassignedStudentCount,
+      deletedAttemptCount
+    });
+  } catch (error) {
+    console.error('Delete hosted exam error:', error);
+    return res.status(500).json({ error: getApiErrorMessage(error, 'Failed to delete hosted exam') });
+  }
+});
+
 // Teacher metrics
 router.get('/metrics/teacher', verifyToken, hasRole('teacher'), async (req, res) => {
   try {
@@ -1565,9 +2062,38 @@ router.post('/student/hosted/:hostedAssessmentId/start', verifyToken, hasRole('s
     let activeAttempt = existingInProgress || null;
 
     if (activeAttempt && hostedExam.allow_resume === false) {
-      return res.status(400).json({
-        error: 'Resume is disabled for this assessment by your teacher'
-      });
+      try {
+        const { updatedAttempt, resultVisible, resultMode } = await submitAttemptWithScoring({
+          attempt: {
+            ...activeAttempt,
+            hosted: hostedExam
+          },
+          forceAutoSubmit: true
+        });
+
+        return res.status(409).json({
+          error: 'Resume is disabled for this assessment. Your previous in-progress attempt was auto-submitted.',
+          autoSubmittedAttempt: {
+            id: updatedAttempt.id,
+            status: updatedAttempt.status,
+            score: updatedAttempt.score,
+            total_marks: updatedAttempt.total_marks,
+            percentage: updatedAttempt.percentage,
+            correct_count: updatedAttempt.correct_count,
+            total_questions: updatedAttempt.total_questions,
+            submitted_at: updatedAttempt.submitted_at,
+            attempt_number: updatedAttempt.attempt_number
+          },
+          resultVisible,
+          resultMode
+        });
+      } catch (autoSubmitError) {
+        if (autoSubmitError?.statusCode === 400) {
+          return res.status(400).json({ error: autoSubmitError.message });
+        }
+
+        throw autoSubmitError;
+      }
     }
 
     if (!activeAttempt) {
@@ -1662,7 +2188,7 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
     const forceTakeover = String(req.query?.forceTakeover || '').toLowerCase() === 'true';
     const sessionToken = getExamSessionToken(req);
 
-    const { data: attempt, error: attemptError } = await supabase
+    let { data: attempt, error: attemptError } = await supabase
       .from('assessment_attempts')
       .select(`
         *,
@@ -1694,8 +2220,9 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
 
     const sessionMeta = getAttemptSessionMeta(attempt.answers);
     const hasDifferentSession = Boolean(sessionMeta.token && sessionToken && sessionMeta.token !== sessionToken);
+    const shouldEnforceSessionLock = attempt.status === 'in_progress';
 
-    if (hasDifferentSession && !forceTakeover) {
+    if (shouldEnforceSessionLock && hasDifferentSession && !forceTakeover) {
       return res.status(409).json(buildSessionConflictResponse(
         'This attempt is active in another browser session. Resume here to safely continue.',
         attempt.id
@@ -1704,7 +2231,7 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
 
     let resolvedAttempt = attempt;
 
-    if (sessionToken && (!sessionMeta.token || forceTakeover)) {
+    if (shouldEnforceSessionLock && sessionToken && (!sessionMeta.token || forceTakeover)) {
       const { data: updatedAttempt, error: updateError } = await supabase
         .from('assessment_attempts')
         .update({
@@ -1716,7 +2243,12 @@ router.get('/student/attempts/:attemptId', verifyToken, hasRole('student'), asyn
 
       if (updateError) throw updateError;
 
-      resolvedAttempt = updatedAttempt;
+      // Preserve already-joined hosted/template data from the original fetch.
+      // The update query selects only assessment_attempts columns.
+      resolvedAttempt = {
+        ...updatedAttempt,
+        hosted: attempt.hosted
+      };
     }
 
     const questions = normalizeQuestionList(resolvedAttempt.hosted?.template?.template_data);
@@ -1865,7 +2397,8 @@ router.post('/student/attempts/:attemptId/mark-mcq-complete', verifyToken, hasRo
 router.post('/student/attempts/:attemptId/submit', verifyToken, hasRole('student'), async (req, res) => {
   try {
     const { attemptId } = req.params;
-    const { answers = {}, forceAutoSubmit = false } = req.body || {};
+    const { answers = {}, forceAutoSubmit: rawForceAutoSubmit = false } = req.body || {};
+    const forceAutoSubmit = parseBooleanInput(rawForceAutoSubmit, false);
 
     const { data: attempt, error: attemptError } = await supabase
       .from('assessment_attempts')
@@ -1911,70 +2444,32 @@ router.post('/student/attempts/:attemptId/submit', verifyToken, hasRole('student
       });
     }
 
-    const questions = normalizeQuestionList(attempt.hosted?.template?.template_data);
-    if (questions.length === 0) {
-      return res.status(400).json({ error: 'Assessment questions are not configured' });
+    let submissionResult;
+
+    try {
+      submissionResult = await submitAttemptWithScoring({
+        attempt,
+        incomingAnswers: answers,
+        forceAutoSubmit
+      });
+    } catch (submissionError) {
+      if (submissionError?.statusCode === 400) {
+        return res.status(400).json({ error: submissionError.message });
+      }
+
+      throw submissionError;
     }
 
-    const remainingSeconds = getRemainingSeconds(attempt, attempt.hosted);
-    const submittedStatus = (forceAutoSubmit || remainingSeconds <= 0) ? 'auto_submitted' : 'submitted';
-    const mergedAnswers = {
-      ...(attempt.answers && typeof attempt.answers === 'object' ? attempt.answers : {}),
-      ...(answers && typeof answers === 'object' ? answers : {})
-    };
-
-    const scoreSummary = calculateAttemptSummary(
-      questions,
-      mergedAnswers,
-      attempt.hosted?.template?.total_marks
-    );
-
-    const metadataAnswers = Object.fromEntries(
-      Object.entries(mergedAnswers).filter(([key]) => key.startsWith('__'))
-    );
-    const finalAnswers = {
-      ...scoreSummary.normalizedAnswers,
-      ...metadataAnswers
-    };
-
-    const codingSection = normalizeCodingSection(attempt.hosted?.coding_section);
-    if (codingSection) {
-      const nowIso = new Date().toISOString();
-      const sectionState = getAttemptSectionState(finalAnswers);
-      finalAnswers[ATTEMPT_SECTION_META_KEY] = {
-        currentSection: 'coding',
-        mcqCompletedAt: sectionState.mcqCompletedAt || nowIso,
-        codingEnteredAt: sectionState.codingEnteredAt || nowIso
-      };
-    }
-
-    const { data: updatedAttempt, error: updateError } = await supabase
-      .from('assessment_attempts')
-      .update({
-        status: submittedStatus,
-        answers: finalAnswers,
-        score: scoreSummary.score,
-        total_marks: scoreSummary.totalMarks,
-        percentage: scoreSummary.percentage,
-        correct_count: scoreSummary.correctCount,
-        total_questions: scoreSummary.totalQuestions,
-        submitted_at: new Date().toISOString()
-      })
-      .eq('id', attempt.id)
-      .select('*')
-      .single();
-
-    if (updateError) throw updateError;
-
-    const resultVisible = (
-      attempt.hosted?.result_mode === 'immediate' ||
-      (attempt.hosted?.result_mode === 'after_end' && attempt.hosted?.end_time && new Date() > new Date(attempt.hosted.end_time))
-    );
+    const {
+      updatedAttempt,
+      resultVisible,
+      resultMode
+    } = submissionResult;
 
     res.json({
       message: 'Attempt submitted successfully',
       resultVisible,
-      resultMode: attempt.hosted?.result_mode,
+      resultMode,
       attempt: {
         id: updatedAttempt.id,
         status: updatedAttempt.status,
@@ -2193,7 +2688,7 @@ router.get('/metrics/student', verifyToken, hasRole('student'), async (req, res)
     const { data: hostedExams, error } = await supabase
       .from('hosted_assessments')
       .select('id, class_id, section_id, zone, publish_status, start_time, end_time')
-      .eq('publish_status', 'published');
+      .in('publish_status', ['published', 'closed']);
 
     if (error && isMissingHostedTableError(error)) {
       return res.json({ assigned: 0, inProgress: 0, upcoming: 0, completed: 0, setupRequired: true });
@@ -2211,12 +2706,14 @@ router.get('/metrics/student', verifyToken, hasRole('student'), async (req, res)
       return isExamAssignedToStudent(exam, studentDetail, req.user.id, targetedStudentIds);
     });
 
-    const inProgress = exams.filter((exam) => {
+    const publishedExams = exams.filter((exam) => exam.publish_status === 'published');
+
+    const inProgress = publishedExams.filter((exam) => {
       if (!exam.start_time || !exam.end_time) return false;
       return new Date(exam.start_time) <= now && now <= new Date(exam.end_time);
     }).length;
 
-    const upcoming = exams.filter((exam) => {
+    const upcoming = publishedExams.filter((exam) => {
       if (!exam.start_time) return false;
       return now < new Date(exam.start_time);
     }).length;

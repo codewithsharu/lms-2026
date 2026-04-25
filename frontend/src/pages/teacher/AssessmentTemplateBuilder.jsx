@@ -8,6 +8,20 @@ import Button from '../../components/ui/Button';
 import InputField from '../../components/ui/InputField';
 import { assessmentAPI } from '../../services/api';
 
+const normalizeMarksValue = (rawValue, fallback = 1) => {
+  const parsed = Number(rawValue);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Number(parsed.toFixed(2));
+};
+
+const calculateQuestionSetMarks = (questions = []) => Number(
+  (questions || []).reduce((sum, question) => sum + normalizeMarksValue(question?.marks, 1), 0).toFixed(2)
+);
+
 const getEmptyQuestion = () => ({
   type: 'mcq',
   question: '',
@@ -15,7 +29,8 @@ const getEmptyQuestion = () => ({
   answerMode: 'single',
   correctOptions: [0],
   correctOption: 0,
-  blankAnswer: ''
+  blankAnswer: '',
+  marks: 1
 });
 
 const getQuestionTypeLabel = (type) => (type === 'blank' ? 'Fill in the Blank' : 'MCQ');
@@ -38,7 +53,8 @@ const normalizeQuestionFromJson = (item) => {
       answerMode: 'single',
       correctOptions: [0],
       correctOption: 0,
-      blankAnswer
+      blankAnswer,
+      marks: normalizeMarksValue(item?.marks ?? item?.score ?? item?.points, 1)
     };
   }
 
@@ -61,7 +77,8 @@ const normalizeQuestionFromJson = (item) => {
     answerMode,
     correctOptions,
     correctOption: correctOptions[0],
-    blankAnswer: ''
+    blankAnswer: '',
+    marks: normalizeMarksValue(item?.marks ?? item?.score ?? item?.points, 1)
   };
 };
 
@@ -81,7 +98,8 @@ const getQuestionSetFromTemplate = (template) => {
         ? item.correctOptions.filter((value) => Number.isInteger(value) && value >= 0 && value <= 3)
         : (Number.isInteger(item?.correctOption) ? [item.correctOption] : [0]),
       correctOption: Number.isInteger(item?.correctOption) ? item.correctOption : 0,
-      blankAnswer: item?.blankAnswer ? String(item.blankAnswer) : ''
+      blankAnswer: item?.blankAnswer ? String(item.blankAnswer) : '',
+      marks: normalizeMarksValue(item?.marks ?? item?.score ?? item?.points, 1)
     }))
     .map((item) => ({
       ...item,
@@ -108,6 +126,8 @@ const AssessmentTemplateBuilder = () => {
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [importingJson, setImportingJson] = useState(false);
   const draftCreationRef = useRef(false);
+  const initializeBuilderRef = useRef(null);
+  const persistTemplateRef = useRef(null);
 
   const isLocalDraft = Boolean(activeTemplate?.isLocalDraft);
   const isPlaceholderDraft = Boolean(activeTemplate?.isPlaceholder);
@@ -162,8 +182,10 @@ const AssessmentTemplateBuilder = () => {
     }
   };
 
+  initializeBuilderRef.current = initializeBuilder;
+
   useEffect(() => {
-    initializeBuilder();
+    initializeBuilderRef.current?.();
   }, [templateId]);
 
   useEffect(() => {
@@ -185,7 +207,7 @@ const AssessmentTemplateBuilder = () => {
           subject: 'MCQ',
           description: 'MCQ question set template',
           question_count: mcqList.length,
-          total_marks: mcqList.length,
+          total_marks: calculateQuestionSetMarks(mcqList),
           passing_percentage: 40,
           template_data: { questions: mcqList }
         });
@@ -220,6 +242,7 @@ const AssessmentTemplateBuilder = () => {
 
   const isNewQuestionValid = useMemo(() => {
     if (!newMcq.question.trim()) return false;
+    if (!Number.isFinite(Number(newMcq.marks)) || Number(newMcq.marks) <= 0) return false;
     if (newMcq.type === 'blank') {
       return newMcq.blankAnswer.trim().length > 0;
     }
@@ -231,6 +254,7 @@ const AssessmentTemplateBuilder = () => {
 
   const mcqCount = useMemo(() => mcqList.filter((item) => item.type !== 'blank').length, [mcqList]);
   const blankCount = useMemo(() => mcqList.filter((item) => item.type === 'blank').length, [mcqList]);
+  const totalQuestionMarks = useMemo(() => calculateQuestionSetMarks(mcqList), [mcqList]);
   const showsBlankHint = newMcq.type === 'blank' && newMcq.question.trim() && !newMcq.question.includes('____');
 
   const persistTemplate = async (questions, name, showToast = false) => {
@@ -243,7 +267,7 @@ const AssessmentTemplateBuilder = () => {
         subject: 'MCQ',
         description: 'MCQ question set template',
         question_count: questions.length,
-        total_marks: questions.length,
+        total_marks: calculateQuestionSetMarks(questions),
         template_data: { questions }
       });
 
@@ -258,11 +282,13 @@ const AssessmentTemplateBuilder = () => {
     }
   };
 
+  persistTemplateRef.current = persistTemplate;
+
   useEffect(() => {
     if (!activeTemplate?.id || isLocalDraft || isPlaceholderDraft) return;
 
     const timer = setTimeout(() => {
-      persistTemplate(mcqList, templateName, false);
+      persistTemplateRef.current?.(mcqList, templateName, false);
     }, 900);
 
     return () => clearTimeout(timer);
@@ -297,7 +323,8 @@ const AssessmentTemplateBuilder = () => {
       answerMode: selected.answerMode === 'multiple' || fallbackCorrectOptions.length > 1 ? 'multiple' : 'single',
       correctOptions: fallbackCorrectOptions.length > 0 ? fallbackCorrectOptions : [0],
       correctOption: fallbackCorrectOptions.length > 0 ? fallbackCorrectOptions[0] : selected.correctOption,
-      blankAnswer: selected.blankAnswer || ''
+      blankAnswer: selected.blankAnswer || '',
+      marks: normalizeMarksValue(selected.marks, 1)
     });
   };
 
@@ -350,7 +377,7 @@ const AssessmentTemplateBuilder = () => {
 
   const upsertQuestion = () => {
     if (!isNewQuestionValid) {
-      toast.error('Fill question, all options, and select correct answer(s)');
+      toast.error('Fill question, marks, all options, and select correct answer(s)');
       return;
     }
 
@@ -363,7 +390,8 @@ const AssessmentTemplateBuilder = () => {
       answerMode: newMcq.answerMode,
       correctOptions: normalizedCorrectOptions,
       correctOption: normalizedCorrectOptions[0] ?? 0,
-      blankAnswer: newMcq.blankAnswer.trim()
+      blankAnswer: newMcq.blankAnswer.trim(),
+      marks: normalizeMarksValue(newMcq.marks, 1)
     };
 
     if (editingIndex === null) {
@@ -419,7 +447,7 @@ const AssessmentTemplateBuilder = () => {
           subject: 'MCQ',
           description: 'MCQ question set template',
           question_count: mcqList.length,
-          total_marks: mcqList.length,
+          total_marks: totalQuestionMarks,
           passing_percentage: 40,
           template_data: { questions: mcqList }
         });
@@ -470,7 +498,10 @@ const AssessmentTemplateBuilder = () => {
       setMcqList((prev) => [...prev, ...normalized]);
       toast.success(`${normalized.length} question(s) added from JSON`);
     } catch (error) {
-      toast.error('Failed to import JSON file');
+      const message = error instanceof SyntaxError
+        ? 'Invalid JSON syntax in uploaded file'
+        : (error?.response?.data?.error || 'Failed to import JSON file');
+      toast.error(message);
     } finally {
       setImportingJson(false);
     }
@@ -570,7 +601,7 @@ const AssessmentTemplateBuilder = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
               <div className="rounded-xl border border-blue-100 bg-blue-50/70 p-3">
                 <p className="text-xs uppercase tracking-wide text-blue-700">Total Questions</p>
                 <p className="mt-1 text-2xl font-semibold text-blue-900">{mcqList.length}</p>
@@ -582,6 +613,10 @@ const AssessmentTemplateBuilder = () => {
               <div className="rounded-xl border border-violet-100 bg-violet-50/70 p-3">
                 <p className="text-xs uppercase tracking-wide text-violet-700">Blank Questions</p>
                 <p className="mt-1 text-2xl font-semibold text-violet-900">{blankCount}</p>
+              </div>
+              <div className="rounded-xl border border-amber-100 bg-amber-50/70 p-3">
+                <p className="text-xs uppercase tracking-wide text-amber-700">Total Marks</p>
+                <p className="mt-1 text-2xl font-semibold text-amber-900">{totalQuestionMarks}</p>
               </div>
             </div>
 
@@ -627,6 +662,19 @@ const AssessmentTemplateBuilder = () => {
                 value={newMcq.question}
                 onChange={(event) => setNewMcq((prev) => ({ ...prev, question: event.target.value }))}
                 placeholder={newMcq.type === 'blank' ? 'Example: The capital of France is ____.' : 'Enter question text'}
+              />
+
+              <InputField
+                label="Marks"
+                type="number"
+                min="1"
+                step="0.5"
+                value={newMcq.marks}
+                onChange={(event) => setNewMcq((prev) => ({
+                  ...prev,
+                  marks: event.target.value === '' ? '' : Number(event.target.value)
+                }))}
+                placeholder="1"
               />
 
               {showsBlankHint && (
@@ -738,6 +786,7 @@ const AssessmentTemplateBuilder = () => {
                 <p className="mt-1 text-sm font-medium text-slate-800">
                   {newMcq.question || 'Question preview will appear here as you type.'}
                 </p>
+                <p className="mt-1 text-xs text-slate-600">Marks: {normalizeMarksValue(newMcq.marks, 1)}</p>
                 {newMcq.type === 'mcq' ? (
                   <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-slate-600">
                     {[0, 1, 2, 3].map((optionIndex) => (
@@ -782,6 +831,7 @@ const AssessmentTemplateBuilder = () => {
                 <div className="flex items-center gap-2 text-xs">
                   <span className="status-badge info">MCQ: {mcqCount}</span>
                   <span className="status-badge warning">Blank: {blankCount}</span>
+                  <span className="status-badge success">Marks: {totalQuestionMarks}</span>
                 </div>
               </div>
 
@@ -793,6 +843,7 @@ const AssessmentTemplateBuilder = () => {
                         <th>#</th>
                         <th>Type</th>
                         <th>Question</th>
+                        <th>Marks</th>
                         <th>Correct</th>
                         <th className="text-right">Actions</th>
                       </tr>
@@ -815,6 +866,9 @@ const AssessmentTemplateBuilder = () => {
                                 A) {mcq.options[0]} • B) {mcq.options[1]} • C) {mcq.options[2]} • D) {mcq.options[3]}
                               </p>
                             )}
+                          </td>
+                          <td>
+                            {normalizeMarksValue(mcq.marks, 1)}
                           </td>
                           <td>
                             {mcq.type === 'blank'
