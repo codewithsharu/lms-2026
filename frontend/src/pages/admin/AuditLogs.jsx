@@ -196,17 +196,28 @@ const AuditLogs = () => {
 
     try {
       setClearingLogs(true);
+      
+      let totalDeleted = 0;
+      let hasMore = true;
+      let batches = 0;
+      const loadingToastId = toast.loading('Clearing logs (this may take a while)...');
 
-      const response = await auditLogAPI.clearAll({ batch_size: 500 });
-      const deleted = Number(response.data?.deleted) || 0;
-      const batches = Number(response.data?.batches) || 0;
+      while (hasMore) {
+        const response = await auditLogAPI.clearAll({ batch_size: 500 });
+        const deleted = Number(response.data?.deleted) || 0;
+        batches += 1;
+        totalDeleted += deleted;
+        hasMore = response.data?.hasMore === true;
+      }
+      
+      toast.dismiss(loadingToastId);
 
-      if (deleted === 0) {
+      if (totalDeleted === 0) {
         toast('No audit logs to clear');
       } else if (batches > 1) {
-        toast.success(`Cleared ${deleted} audit logs in ${batches} batches`);
+        toast.success(`Cleared ${totalDeleted} audit logs in ${batches} batches`);
       } else {
-        toast.success(`Cleared ${deleted} audit logs`);
+        toast.success(`Cleared ${totalDeleted} audit logs`);
       }
 
       setSelectedLog(null);
@@ -356,7 +367,7 @@ const AuditLogs = () => {
                 onClick={clearAuditLogs}
                 disabled={loading || clearingLogs}
               >
-                <FiRefreshCw className="w-4 h-4" />
+                <FiRefreshCw className={`w-4 h-4 ${clearingLogs ? 'animate-spin' : ''}`} />
                 {clearingLogs ? 'Clearing...' : 'Clear'}
               </Button>
             </div>

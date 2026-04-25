@@ -140,42 +140,48 @@ router.get('/', verifyToken, isAdmin, async (req, res) => {
 router.delete('/', verifyToken, isAdmin, async (req, res) => {
   try {
     const batchSize = getBatchSize(req.query.batch_size);
-    let totalDeleted = 0;
-    let batches = 0;
 
-    while (true) {
-      const { data: batchRows, error: fetchBatchError } = await supabase
-        .from('audit_logs')
-        .select('id')
-        .order('created_at', { ascending: true })
-        .limit(batchSize);
+    const { data: batchRows, error: fetchBatchError } = await supabase
+      .from('audit_logs')
+      .select('id')
+      .order('created_at', { ascending: true })
+      .limit(batchSize);
 
-      if (fetchBatchError) throw fetchBatchError;
-      if (!Array.isArray(batchRows) || batchRows.length === 0) break;
+    if (fetchBatchError) throw fetchBatchError;
 
-      const batchIds = batchRows
-        .map((row) => row.id)
-        .filter(Boolean);
-
-      if (batchIds.length === 0) break;
-
-      const { error: deleteBatchError } = await supabase
-        .from('audit_logs')
-        .delete()
-        .in('id', batchIds);
-
-      if (deleteBatchError) throw deleteBatchError;
-
-      totalDeleted += batchIds.length;
-      batches += 1;
-
-      if (batchRows.length < batchSize) break;
+    if (!Array.isArray(batchRows) || batchRows.length === 0) {
+      return res.json({
+        message: 'No audit logs to clear',
+        deleted: 0,
+        hasMore: false,
+        batchSize
+      });
     }
 
+    const batchIds = batchRows.map((row) => row.id).filter(Boolean);
+
+    if (batchIds.length === 0) {
+      return res.json({
+        message: 'No valid audit logs to clear',
+        deleted: 0,
+        hasMore: false,
+        batchSize
+      });
+    }
+
+    const { error: deleteBatchError } = await supabase
+      .from('audit_logs')
+      .delete()
+      .in('id', batchIds);
+
+    if (deleteBatchError) throw deleteBatchError;
+
+    const hasMore = batchIds.length === batchSize;
+
     res.json({
-      message: 'Audit logs cleared successfully',
-      deleted: totalDeleted,
-      batches,
+      message: 'Audit logs batch cleared successfully',
+      deleted: batchIds.length,
+      hasMore,
       batchSize
     });
   } catch (error) {

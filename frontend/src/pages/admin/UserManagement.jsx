@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
+import * as XLSX from 'xlsx';
 import {
   FiPlus,
   FiUpload,
@@ -50,6 +51,7 @@ const UserManagement = ({ fixedRole = '' }) => {
 
   const [showCreateModal, setShowCreateModal] = useState(searchParams.get('action') === 'create');
   const [showUploadModal, setShowUploadModal] = useState(searchParams.get('action') === 'upload');
+  const [uploadProgress, setUploadProgress] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showResetPasswordModal, setShowResetPasswordModal] = useState(false);
@@ -556,14 +558,63 @@ const UserManagement = ({ fixedRole = '' }) => {
 
     try {
       setFormLoading(true);
-      const response = await userAPI.bulkUpload(file);
-      setUploadResults(response.data);
-      toast.success(`Uploaded ${response.data.summary.successful} users`);
+
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const data = XLSX.utils.sheet_to_json(worksheet);
+
+      if (!data.length) {
+        toast.error('Excel file is empty');
+        return;
+      }
+
+      const batchSize = 20;
+      const batches = [];
+      for (let i = 0; i < data.length; i += batchSize) {
+        batches.push(data.slice(i, i + batchSize));
+      }
+
+      let totalSuccessful = 0;
+      let totalFailed = 0;
+      const allResults = { success: [], failed: [] };
+
+      setUploadProgress({ total: batches.length, current: 0 });
+
+      for (let i = 0; i < batches.length; i++) {
+        const batchData = batches[i];
+        const newSheet = XLSX.utils.json_to_sheet(batchData);
+        const newWorkbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(newWorkbook, newSheet, sheetName);
+
+        const excelBuffer = XLSX.write(newWorkbook, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const batchFile = new File([blob], `batch_${i}.xlsx`, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+        const response = await userAPI.bulkUpload(batchFile);
+
+        totalSuccessful += response.data.summary.successful || 0;
+        totalFailed += response.data.summary.failed || 0;
+        allResults.success.push(...(response.data.results?.success || []));
+        allResults.failed.push(...(response.data.results?.failed || []));
+
+        setUploadProgress({ total: batches.length, current: i + 1 });
+      }
+
+      setUploadResults({
+        summary: { total: data.length, successful: totalSuccessful, failed: totalFailed },
+        results: allResults
+      });
+
+      toast.success(`Uploaded ${totalSuccessful} users in ${batches.length} batches`);
       fetchUsers();
     } catch (error) {
+      console.error('Bulk upload failed', error);
       toast.error(error.response?.data?.error || 'Upload failed');
     } finally {
       setFormLoading(false);
+      setUploadProgress(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -1272,7 +1323,22 @@ const UserManagement = ({ fixedRole = '' }) => {
               </Button>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {uploadProgress && (
+              <div className="space-y-2 mt-4">
+                <div className="flex justify-between text-sm text-slate-600">
+                  <span>Uploading batch {uploadProgress.current} of {uploadProgress.total}</span>
+                  <span>{Math.round((uploadProgress.current / uploadProgress.total) * 100)}%</span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full bg-primary transition-all duration-300"
+                    style={{ width: `${(uploadProgress.current / uploadProgress.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 mt-4">
               <Button variant="secondary" onClick={() => handleDownloadTemplate('student')}>
                 <FiDownload className="h-4 w-4" />
                 Student Template
