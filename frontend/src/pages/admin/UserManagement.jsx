@@ -39,6 +39,7 @@ const UserManagement = ({ fixedRole = '' }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState(fixedRole);
   const isStudentManagement = fixedRole === 'student';
+  const isTeacherManagement = fixedRole === 'teacher';
   const [studentTab, setStudentTab] = useState('assigned');
   const [selectedUserIds, setSelectedUserIds] = useState([]);
   const [showAssignStudentsModal, setShowAssignStudentsModal] = useState(false);
@@ -102,8 +103,16 @@ const UserManagement = ({ fixedRole = '' }) => {
   const activeRoleFilter = fixedRole || roleFilter;
   const activeStudentTab = isStudentManagement ? studentTab : '';
   const isUnassignedStudentsTab = isStudentManagement && studentTab === 'unassigned';
-  const tableColumnCount = isStudentManagement ? 6 : 5;
+  const supportsBulkSelection = isStudentManagement || isTeacherManagement;
+  const tableColumnCount = supportsBulkSelection ? 6 : 5;
   const selectedUsersCount = selectedUserIds.length;
+  const selectedUsers = users.filter((user) => selectedUserIds.includes(user.id));
+  const selectedActiveTeachersCount = isTeacherManagement
+    ? selectedUsers.filter((user) => user.is_active).length
+    : 0;
+  const selectedInactiveTeachersCount = isTeacherManagement
+    ? selectedUsers.filter((user) => !user.is_active).length
+    : 0;
   const allCurrentUsersSelected = users.length > 0 && users.every((user) => selectedUserIds.includes(user.id));
 
   const entityLabel = fixedRole === 'student' ? 'Student' : fixedRole === 'teacher' ? 'Teacher' : 'User';
@@ -345,7 +354,7 @@ const UserManagement = ({ fixedRole = '' }) => {
 
   const openBulkDeleteModal = () => {
     if (selectedUserIds.length === 0) {
-      toast.error('Select at least one user to delete');
+      toast.error(`Select at least one ${entityLabel.toLowerCase()} to delete`);
       return;
     }
 
@@ -399,23 +408,58 @@ const UserManagement = ({ fixedRole = '' }) => {
       try {
         setDeleteLoading(true);
 
-        const results = await Promise.allSettled(selectedUserIds.map((userId) => userAPI.delete(userId)));
-        const successCount = results.filter((result) => result.status === 'fulfilled').length;
-        const failedCount = results.length - successCount;
+        if (isTeacherManagement) {
+          const selectedTeachers = users.filter((user) => selectedUserIds.includes(user.id));
+          const activeTeachers = selectedTeachers.filter((teacher) => teacher.is_active);
+          const inactiveTeachers = selectedTeachers.filter((teacher) => !teacher.is_active);
 
-        if (successCount > 0) {
-          toast.success(`Deleted ${successCount} ${successCount === 1 ? 'user' : 'users'} successfully`);
-        }
+          const deactivateResults = await Promise.allSettled(
+            activeTeachers.map((teacher) => userAPI.update(teacher.id, { is_active: false }))
+          );
+          const deleteResults = await Promise.allSettled(
+            inactiveTeachers.map((teacher) => userAPI.delete(teacher.id))
+          );
 
-        if (failedCount > 0) {
-          const firstError = results.find((result) => result.status === 'rejected')?.reason?.response?.data?.error;
-          toast.error(firstError ? `${failedCount} failed: ${firstError}` : `${failedCount} delete action(s) failed`);
+          const deactivatedCount = deactivateResults.filter((result) => result.status === 'fulfilled').length;
+          const deletedCount = deleteResults.filter((result) => result.status === 'fulfilled').length;
+          const deactivateFailedCount = deactivateResults.length - deactivatedCount;
+          const deleteFailedCount = deleteResults.length - deletedCount;
+          const totalFailed = deactivateFailedCount + deleteFailedCount;
+
+          if (deactivatedCount > 0) {
+            toast.success(`Marked ${deactivatedCount} teacher${deactivatedCount === 1 ? '' : 's'} as inactive`);
+          }
+
+          if (deletedCount > 0) {
+            toast.success(`Deleted ${deletedCount} inactive teacher${deletedCount === 1 ? '' : 's'}`);
+          }
+
+          if (totalFailed > 0) {
+            const firstError = [...deactivateResults, ...deleteResults].find((result) => result.status === 'rejected')
+              ?.reason?.response?.data?.error;
+            toast.error(firstError ? `${totalFailed} action(s) failed: ${firstError}` : `${totalFailed} action(s) failed`);
+          }
+        } else {
+          const results = await Promise.allSettled(selectedUserIds.map((userId) => userAPI.delete(userId)));
+          const successCount = results.filter((result) => result.status === 'fulfilled').length;
+          const failedCount = results.length - successCount;
+
+          if (successCount > 0) {
+            toast.success(`Deleted ${successCount} ${successCount === 1 ? 'user' : 'users'} successfully`);
+          }
+
+          if (failedCount > 0) {
+            const firstError = results.find((result) => result.status === 'rejected')?.reason?.response?.data?.error;
+            toast.error(firstError ? `${failedCount} failed: ${firstError}` : `${failedCount} delete action(s) failed`);
+          }
         }
 
         setShowDeleteModal(false);
         setSelectedUserIds([]);
         setDeleteMode('single');
         await fetchUsers();
+      } catch (error) {
+        toast.error(error.response?.data?.error || 'Failed to process selected users');
       } finally {
         setDeleteLoading(false);
       }
@@ -753,32 +797,36 @@ const UserManagement = ({ fixedRole = '' }) => {
               <p className="body-sm">{pagination.total} total records</p>
             </div>
 
-            {isStudentManagement && (
+            {supportsBulkSelection && (
               <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                <div className="inline-flex w-fit rounded-lg border border-slate-200 bg-white p-1">
-                  <button
-                    type="button"
-                    onClick={() => handleStudentTabChange('assigned')}
-                    className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                      studentTab === 'assigned' ? 'bg-primary text-white' : 'text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    Assigned Students
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleStudentTabChange('unassigned')}
-                    className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                      studentTab === 'unassigned' ? 'bg-primary text-white' : 'text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    Unassigned Students
-                  </button>
-                </div>
+                {isStudentManagement && (
+                  <div className="inline-flex w-fit rounded-lg border border-slate-200 bg-white p-1">
+                    <button
+                      type="button"
+                      onClick={() => handleStudentTabChange('assigned')}
+                      className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                        studentTab === 'assigned' ? 'bg-primary text-white' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      Assigned Students
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleStudentTabChange('unassigned')}
+                      className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                        studentTab === 'unassigned' ? 'bg-primary text-white' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      Unassigned Students
+                    </button>
+                  </div>
+                )}
 
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-sm text-slate-600">
-                    Select one or more students to use bulk actions.
+                    {isTeacherManagement
+                      ? 'Select one or more teachers to use bulk actions.'
+                      : 'Select one or more students to use bulk actions.'}
                   </p>
 
                   <div className="flex flex-wrap items-center gap-2">
@@ -809,14 +857,14 @@ const UserManagement = ({ fixedRole = '' }) => {
               <table>
                 <thead>
                   <tr>
-                    {isStudentManagement && (
+                    {supportsBulkSelection && (
                       <th className="w-12">
                         <input
                           type="checkbox"
                           checked={allCurrentUsersSelected}
                           onChange={handleToggleSelectAllUsers}
                           className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
-                          aria-label="Select all visible students"
+                          aria-label={`Select all visible ${entityPluralLabel.toLowerCase()}`}
                         />
                       </th>
                     )}
@@ -831,7 +879,7 @@ const UserManagement = ({ fixedRole = '' }) => {
                   {loading ? (
                     [...Array(5)].map((_, i) => (
                       <tr key={i}>
-                        {isStudentManagement && (
+                        {supportsBulkSelection && (
                           <td>
                             <div className="h-5 w-5 animate-pulse rounded bg-slate-100" />
                           </td>
@@ -856,7 +904,7 @@ const UserManagement = ({ fixedRole = '' }) => {
                   ) : users.length > 0 ? (
                     users.map((user) => (
                       <tr key={user.id} className="align-top">
-                        {isStudentManagement && (
+                        {supportsBulkSelection && (
                           <td>
                             <input
                               type="checkbox"
@@ -1484,8 +1532,16 @@ const UserManagement = ({ fixedRole = '' }) => {
           setSelectedUser(null);
           setDeleteMode('single');
         }}
-        title={deleteMode === 'bulk' ? 'Delete Selected Users' : `Delete ${entityLabel}`}
-        subtitle="This action is permanent and cannot be undone."
+        title={
+          deleteMode === 'bulk'
+            ? (isTeacherManagement ? 'Manage Selected Teachers' : 'Delete Selected Users')
+            : `Delete ${entityLabel}`
+        }
+        subtitle={
+          deleteMode === 'bulk' && isTeacherManagement
+            ? 'Active teachers will be changed to inactive. Inactive teachers will be deleted.'
+            : 'This action is permanent and cannot be undone.'
+        }
         maxWidth="max-w-md"
         footer={
           <div className="flex gap-3">
@@ -1502,15 +1558,31 @@ const UserManagement = ({ fixedRole = '' }) => {
               Cancel
             </Button>
             <Button variant="danger" className="w-full" onClick={handleDeleteUser} disabled={deleteLoading}>
-              {deleteLoading ? 'Deleting...' : 'Delete'}
+              {deleteLoading
+                ? (deleteMode === 'bulk' && isTeacherManagement ? 'Processing...' : 'Deleting...')
+                : (deleteMode === 'bulk' && isTeacherManagement ? 'Apply Bulk Action' : 'Delete')}
             </Button>
           </div>
         }
       >
         {deleteMode === 'bulk' ? (
-          <p className="text-sm text-slate-600">
-            Are you sure you want to delete <span className="font-semibold text-slate-800">{selectedUsersCount}</span> selected users?
-          </p>
+          isTeacherManagement ? (
+            <div className="space-y-2 text-sm text-slate-600">
+              <p>
+                Selected teachers: <span className="font-semibold text-slate-800">{selectedUsersCount}</span>
+              </p>
+              <p>
+                Active to deactivate: <span className="font-semibold text-slate-800">{selectedActiveTeachersCount}</span>
+              </p>
+              <p>
+                Inactive to delete: <span className="font-semibold text-slate-800">{selectedInactiveTeachersCount}</span>
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-600">
+              Are you sure you want to delete <span className="font-semibold text-slate-800">{selectedUsersCount}</span> selected users?
+            </p>
+          )
         ) : (
           selectedUser && (
             <p className="text-sm text-slate-600">

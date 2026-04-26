@@ -9,6 +9,7 @@ import AdminDashboard from './pages/admin/Dashboard';
 import UserManagement from './pages/admin/UserManagement';
 import ClassManagement from './pages/admin/ClassManagement';
 import AuditLogs from './pages/admin/AuditLogs';
+import AdminAnalytics from './pages/admin/Analytics';
 import HealthCheck from './pages/admin/HealthCheck';
 import HealthCheckTable from './pages/admin/HealthCheckTable';
 import TeacherDashboard from './pages/teacher/Dashboard';
@@ -23,6 +24,7 @@ import TeacherExamPreviewLab from './pages/teacher/ExamPreviewLab';
 import TeacherChallengeBrowser from './pages/teacher/ChallengeBrowser';
 import TeacherChallengeBuilder from './pages/teacher/ChallengeBuilder';
 import TeacherChallengeRunner from './pages/teacher/ChallengeRunner';
+import TeacherAnalytics from './pages/teacher/Analytics';
 import StudentDashboard from './pages/student/Dashboard';
 import StudentAssessments from './pages/student/Assessments';
 import StudentResults from './pages/student/Results';
@@ -91,7 +93,7 @@ function App() {
             path="/admin/analytics"
             element={
               <ProtectedRoute allowedRoles={['admin']}>
-                <UnderDevelopment title="Admin Analytics" description="Analytics dashboard is under development." />
+                <AdminAnalytics />
               </ProtectedRoute>
             }
           />
@@ -221,7 +223,7 @@ function App() {
             path="/teacher/analytics"
             element={
               <ProtectedRoute allowedRoles={['teacher']}>
-                <UnderDevelopment title="Teacher Analytics" description="Analytics module is under development." />
+                <TeacherAnalytics />
               </ProtectedRoute>
             }
           />
